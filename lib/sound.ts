@@ -10,7 +10,7 @@ const SOUNDS: Record<string, string> = {
   win: `${SOUND_BASE}/whenplayerwins.wav`,
   lose: `${SOUND_BASE}/whenuserlose.wav`,
   drawCard: `${SOUND_BASE}/whenplayerdrawcard.mp3`,
-  drawPenalty: `${SOUND_BASE}/whenplayeristodraw2or3cardsfromdeck.mp3`,
+  // drawPenalty: `${SOUND_BASE}/whenplayeristodraw2or3cardsfromdeck.mp3`,
   levelWin: `${SOUND_BASE}/whenplayerwinlevelinelimination.mp3`,
 };
 

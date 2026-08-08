@@ -54,6 +54,11 @@ interface BotAreaProps {
   count: number;
   isTurn: boolean;
   maxCards?: number;
+  // "top" = horizontal (name on top, cards fanning down toward center).
+  // "left" = standing sideways, cards face inward (right), name against wall (left).
+  // "right" = standing sideways, cards face inward (left), name against wall (right).
+  side?: "top" | "left" | "right";
+  singleRow?: boolean; // if true, don't wrap cards into multiple rows
 }
 
 const MAX_VISIBLE = 8;
@@ -62,41 +67,92 @@ const CARDS_PER_ROW = 5;
 // selected card(s). Lets the player chain multiple same-numbered cards.
 const COMMIT_DELAY = 700;
 
-function BotArea({ name, count, isTurn, maxCards }: BotAreaProps) {
+function BotArea({
+  name,
+  count,
+  isTurn,
+  maxCards,
+  side = "top",
+  singleRow = false,
+}: BotAreaProps) {
   const visibleCount = Math.min(count, maxCards ?? MAX_VISIBLE);
   const rows: number[][] = [];
   const arr = Array.from({ length: visibleCount }, (_, i) => i);
-  for (let i = 0; i < arr.length; i += CARDS_PER_ROW) {
-    rows.push(arr.slice(i, i + CARDS_PER_ROW));
+  const rowSize = singleRow ? visibleCount : CARDS_PER_ROW;
+  for (let i = 0; i < arr.length; i += rowSize) {
+    rows.push(arr.slice(i, i + rowSize));
   }
 
+  const isSide = side === "left" || side === "right";
+
+  // Side bots stand sideways: their cards are rotated to face the center
+  // (90° inward), and their name label sits against the outer wall.
+  const cardRotate = side === "left" ? 90 : -90;
+
+  // Name pill: for side bots it's rotated with the card so the name reads
+  // from the wall toward the center.
+  const namePillClass = isSide
+    ? side === "left"
+      ? "inline-flex rotate-90"
+      : "inline-flex -rotate-90"
+    : "flex";
+
+  // Name pill: for the left bot it sits on the left against the wall; for the
+  // right bot (A) it sits on the right against the wall. The card area is
+  // placed on the opposite side so the cards face inward.
+  const namePill = (
+    <div
+      className={`${namePillClass} items-center gap-1 rounded-lg border px-2 py-1 ${
+        isTurn
+          ? "border-amber-400 bg-emerald-700/60"
+          : "border-white/10 bg-white/5"
+      }`}
+    >
+      <span className="text-sm w-16 font-semibold">{name}</span>
+      {isTurn && <span className="ml-0.5 text-amber-300">●</span>}
+      <span className="ml-1 text-xs text-emerald-200">({count})</span>
+    </div>
+  );
+
+  // Card area: for side bots the 5-card columns sit side by side (column gap)
+  // with the cards packed tightly within each column (row gap); for the top
+  // bot cards wrap in rows. Side bots (A & C) get a wider column gap.
+  const cardArea = (
+    <div
+      className={`flex items-center space-x-7 space-y-1 ${isSide ? "flex-row" : "flex-col"} 
+      `}
+    >
+      {rows.map((row, r) => (
+        <div
+          key={r}
+          className={`flex flex-wrap justify-center space-x-0 -space-y-6 ${
+            isSide ? "flex-col" : "flex-row"
+          }`}
+        >
+          {row.map((_, i) => (
+            <FaceDownCard key={i} size="xl" rotate={isSide ? cardRotate : 0} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+
+  // For the right (A) bot the name goes on the right and the cards on the left;
+  // for the top and left bots the name comes first (top/left).
+  const showNameFirst = side === "left" || side === "top";
+
   return (
-    <div className="flex flex-col items-center gap-1">
-      <div
-        className={`flex items-center gap-1 rounded-lg border px-2 py-1 ${
-          isTurn
-            ? "border-amber-400 bg-emerald-700/60"
-            : "border-white/10 bg-white/5"
-        }`}
-      >
-        <span className="text-sm font-semibold">{name}</span>
-        {isTurn && <span className="ml-0.5 text-amber-300">●</span>}
-        <span className="ml-1 text-xs text-emerald-200">({count})</span>
-      </div>
-      {isTurn && (
+    <div
+      className={`flex items-center gap-3 ${isSide ? "flex-row" : "flex-col"}`}
+    >
+      {showNameFirst && namePill}
+      {/* {isTurn && (
         <div className="animate-pulse text-xs font-semibold text-amber-300">
           ▶ thinking...
         </div>
-      )}
-      <div className="flex flex-col items-center gap-1">
-        {rows.map((row, r) => (
-          <div key={r} className="flex flex-wrap justify-center gap-0.5">
-            {row.map((_, i) => (
-              <FaceDownCard key={i} size="md" rotate={0} />
-            ))}
-          </div>
-        ))}
-      </div>
+      )} */}
+      {cardArea}
+      {!showNameFirst && namePill}
     </div>
   );
 }
@@ -211,17 +267,22 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
     if (prev && prev.id !== key && !game.gameOver) {
       playSound("playCard");
       // If the played card forces the next player to draw 2 or 3 cards
-      // (value 2 or 5), play the penalty draw sound — but only when the
-      // USER (player 0) is the one who must draw.
+      // (value 2 or 5), play the penalty draw sound — but ONLY when the
+      // USER (player 0) is the one who must draw. Bots never trigger it.
       const n = game.players.length;
-      const prevPlayerIdx = game.currentPlayerIndex;
-      const nextIdx = (prevPlayerIdx + game.direction + n) % n;
-      const isUserPenalized = game.players[nextIdx]?.isHuman;
-      if (
-        isUserPenalized &&
-        (game.topCard.value === 2 || game.topCard.value === 5)
-      ) {
-        playSound("drawPenalty");
+      const value = game.topCard.value;
+      if (value === 2 || value === 5) {
+        // After a 2 is played the turn has already skipped past the
+        // penalized player, so walk one step back to find them. After a 5
+        // is played the turn is ON the penalized player, so they are the
+        // current player.
+        // const penalizedIdx =
+        //   value === 2
+        //     ? (game.currentPlayerIndex - game.direction + n) % n
+        //     : game.currentPlayerIndex;
+        // if (game.players[penalizedIdx]?.isHuman) {
+        //   playSound("drawPenalty");
+        // }
       }
     }
     prevTopRef.current = { id: key, value: game.topCard.value };
@@ -270,7 +331,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
 
   const effectiveShape: Shape = g.topCard.shape;
 
-// Compute playable cards for the human player
+  // Compute playable cards for the human player
   const humanPlayable = new Set<string>();
   if (isHumanTurn && !pendingShape) {
     if (g.fiveResponse) {
@@ -382,7 +443,14 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
     setGame(() => next);
     setSelectedIds(new Set());
     setSelectedValue(null);
+    // If the human is responding to a 5 challenge (e.g. a previous player
+    // escaped with their own 5 and passed the draw-3 penalty over), don't
+    // use the normal draw sound — use the penalty draw sound instead.
     playSound("drawCard");
+    // if (g.fiveResponse) {
+    //   playSound("drawPenalty");
+    // } else {
+    // }
   }
 
   function handleEndHoldAll() {
@@ -436,11 +504,24 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
   const winner = g.winnerIndex !== null ? g.players[g.winnerIndex] : null;
   // Players still in the tournament
   const activePlayers = g.players.filter((p) => p.active);
+  // Active bots. Assign each bot to a distinct position so a single remaining
+  // bot is only ever shown once (avoids the same bot appearing twice).
+  // In elimination mode the arrangement starts from the human's RIGHT, so the
+  // first bot sits on the right, the second on top, and the third on the left.
+  // In 1v1 the single bot goes to the top.
+  const bots = g.players.filter((p) => !p.isHuman && p.active);
+  const isElim = g.mode === "elimination";
+  // The bot shown at the top of the board.
+  const topBot = isElim ? (bots[1] ?? null) : (bots[0] ?? null);
+  // The bot shown on the right (first bot in elimination, hidden in 1v1).
+  const rightBot = isElim ? (bots[0] ?? null) : null;
+  // The bot shown on the left.
+  const leftBot = bots[2] ?? null;
   // The round winner (safe from elimination)
   const roundWinner =
     g.roundWinnerIndex !== null ? g.players[g.roundWinnerIndex] : null;
 
-// Status hint shown on the human's turn.
+  // Status hint shown on the human's turn.
   let humanHint =
     "Your turn — play a matching card or draw. Click same-numbered cards together!";
   if (g.fiveResponse) {
@@ -458,10 +539,21 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-linear-to-br from-emerald-900 via-emerald-800 to-teal-900 p-4 text-white">
+    <div
+      className="flex min-h-screen flex-col bg-cover bg-center p-4 text-white"
+      style={{ backgroundImage: "url('/gamebackground.jpg')" }}
+    >
       {/* Header */}
       <header className="mb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-black tracking-tight">WHOT 🃏</h1>
+        <h1 className="flex items-center gap-2 text-2xl font-black tracking-tight">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/replacevercelicon.jpg"
+            alt="Whot"
+            className="h-9 w-9 rounded-lg object-cover shadow ring-1 ring-white/20"
+          />
+          WHOT
+        </h1>
         <div className="text-sm text-emerald-200">
           <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-xs font-bold uppercase text-amber-300">
             {g.mode === "1v1" ? "1 v 1" : "Elimination"}
@@ -499,61 +591,99 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
         </div>
       </header>
 
-      {/* Bots row */}
-      <div className="flex flex-wrap items-start justify-center gap-6">
-        {g.players
-          .filter((p) => !p.isHuman && p.active)
-          .map((p, idx) => (
+      {/* Positioned game table: human (bottom). In 1v1 the single bot is at
+      top. In elimination: bot2 (top), bot1 (right), bot3 (left). */}
+      <div className="relative flex flex-1 flex-col">
+        {/* Top player */}
+        <div className="flex justify-center">
+          {topBot && (
             <BotArea
-              key={`${p.name}-${idx}`}
-              name={p.name}
-              count={p.hand.length}
+              name={topBot.name}
+              count={topBot.hand.length}
               isTurn={
-                g.currentPlayerIndex === g.players.indexOf(p) &&
+                g.currentPlayerIndex === g.players.indexOf(topBot) &&
                 !g.gameOver &&
                 !g.roundOver
               }
+              singleRow
             />
-          ))}
-      </div>
-
-      {/* Center: discard pile + deck */}
-      <div className="flex flex-1 flex-col items-center justify-center gap-6 py-4">
-        <div className="flex items-start justify-center gap-10">
-          {g.topCard && <ClassDiscardPile topCard={g.topCard} />}
-          <button
-            type="button"
-            onClick={handleDraw}
-            disabled={!isHumanTurn || pendingShape}
-            title={isHumanTurn ? "Click to draw a card" : ""}
-            className="relative h-40 w-28 rounded-xl transition hover:scale-105 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <DeckCard count={g.deck.length} />
-          </button>
+          )}
         </div>
 
-        {/* Status text */}
-        <div className="flex flex-col items-center gap-1 text-sm text-emerald-200">
-          <div>
-            Current shape:{" "}
-            <span className="font-bold text-white">
-              {describeShape(effectiveShape)}
-            </span>
+        {/* Middle row: left bot | center pile+deck | right bot */}
+        <div className="flex flex-1 items-center justify-between gap-4 px-2">
+          {/* Left bot (hidden in 1v1). Stands sideways, facing inward. */}
+          <div className="w-40 shrink-0">
+            {g.mode !== "1v1" && leftBot && (
+              <BotArea
+                name={leftBot.name}
+                count={leftBot.hand.length}
+                side="left"
+                isTurn={
+                  g.currentPlayerIndex === g.players.indexOf(leftBot) &&
+                  !g.gameOver &&
+                  !g.roundOver
+                }
+              />
+            )}
           </div>
-          {!isHumanTurn && !g.gameOver && !g.roundOver && (
-            <div className="animate-pulse text-sm text-amber-300">
-              {currentPlayer?.name} is thinking...
+
+          {/* Center: discard pile + deck + status */}
+          <div className="flex flex-1 flex-col items-center justify-center gap-3">
+            <div className="flex items-start justify-center gap-8">
+              {g.topCard && <ClassDiscardPile topCard={g.topCard} />}
+              <button
+                type="button"
+                onClick={handleDraw}
+                disabled={!isHumanTurn || pendingShape}
+                title={isHumanTurn ? "Click to draw a card" : ""}
+                className="relative h-36 w-24 rounded-xl transition hover:scale-105 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <DeckCard count={g.deck.length} />
+              </button>
             </div>
-          )}
-          {isHumanTurn && !g.gameOver && !g.roundOver && (
-            <div className="text-sm text-emerald-200">{humanHint}</div>
-          )}
+
+            {/* Status text */}
+            <div className="flex flex-col items-center gap-1 text-sm text-emerald-200">
+              <div>
+                Current shape:{" "}
+                <span className="font-bold text-white">
+                  {describeShape(effectiveShape)}
+                </span>
+              </div>
+              {!isHumanTurn && !g.gameOver && !g.roundOver && (
+                <div className="animate-pulse text-sm text-amber-300">
+                  {currentPlayer?.name} is thinking...
+                </div>
+              )}
+              {isHumanTurn && !g.gameOver && !g.roundOver && (
+                <div className="text-sm text-emerald-200">{humanHint}</div>
+              )}
+            </div>
+          </div>
+
+          {/* Right bot (hidden in 1v1, where the only bot goes to the top).
+          Stands sideways, facing inward. */}
+          <div className="w-40 mr-12 shrink-0">
+            {g.mode !== "1v1" && rightBot && (
+              <BotArea
+                name={rightBot.name}
+                count={rightBot.hand.length}
+                side="right"
+                isTurn={
+                  g.currentPlayerIndex === g.players.indexOf(rightBot) &&
+                  !g.gameOver &&
+                  !g.roundOver
+                }
+              />
+            )}
+          </div>
         </div>
       </div>
 
       {/* Human hand */}
-      <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
-        <div className="mb-2 flex items-center justify-between">
+      <div className="p-3">
+        {/* <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-semibold">
             Your hand ({g.players[0].hand.length})
           </span>
@@ -569,7 +699,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
           <span className="text-xs text-emerald-200">
             Click a card to play it.
           </span>
-        </div>
+        </div> */}
         <PlayerHand
           cards={g.players[0].hand}
           isActive={isHumanTurn && !pendingShape}
@@ -592,7 +722,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
 
       {/* Centered rule popup */}
       {popup && (
-        <div className="pointer-events-none fixed inset-0 z-[60] flex items-center justify-center">
+        <div className="pointer-events-none fixed inset-0 z-60 flex items-center justify-center">
           <div className="rule-pop rounded-2xl border-2 border-amber-400 bg-emerald-900/95 px-8 py-5 text-center shadow-2xl">
             <div className="text-2xl font-black text-amber-300">⚡ Rule!</div>
             <div className="mt-1 max-w-xs text-sm font-semibold text-white">
@@ -846,10 +976,9 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
           </div>
         </div>
       )}
-
       {/* Quit confirmation modal */}
       {confirmQuit && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-6">
+        <div className="fixed inset-0 z-70 flex items-center justify-center bg-black/70 p-6">
           <div className="w-full max-w-md rounded-2xl bg-white p-8 text-center text-zinc-900 shadow-2xl">
             <div className="text-5xl mb-3">🚪</div>
             <h2 className="text-2xl font-black">Quit Game?</h2>

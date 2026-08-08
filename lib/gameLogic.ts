@@ -123,12 +123,12 @@ export function initGame(
   numPlayers = 4,
   mode: GameMode = "elimination",
 ): GameState {
-  const count = Math.max(2, Math.min(6, Math.floor(numPlayers)));
+const count = Math.max(2, Math.min(4, Math.floor(numPlayers)));
   const names: { name: string; isHuman: boolean }[] = [
     { name: "You", isHuman: true },
   ];
-  for (let i = 1; i < count; i++) {
-    names.push({ name: `Bot ${String.fromCharCode(64 + i)}`, isHuman: false });
+for (let i = 1; i < count; i++) {
+    names.push({ name: `Player ${i}`, isHuman: false });
   }
   return dealRound(names, 1, mode);
 }

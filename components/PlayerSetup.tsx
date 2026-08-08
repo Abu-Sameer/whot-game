@@ -7,22 +7,30 @@ interface PlayerSetupProps {
   onStart: (numPlayers: number, mode: GameMode) => void;
 }
 
-const OPTIONS = [2, 3, 4, 5, 6];
+const OPTIONS = [2, 3, 4];
 
 export default function PlayerSetup({ onStart }: PlayerSetupProps) {
   const [mode, setMode] = useState<GameMode | null>(null);
 
-  // Step 1: choose a game mode.
+// Step 1: choose a game mode.
   if (mode === null) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-emerald-900 via-emerald-800 to-teal-900 p-6 text-white">
-        <div className="text-6xl mb-4">🃏</div>
+      <div
+        className="flex min-h-screen flex-col items-center justify-center bg-cover bg-center p-6 text-white"
+        style={{ backgroundImage: "url('/firstpagebackground.jpg')" }}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/gamelogoatthestart.jpg"
+          alt="Whot game logo"
+          className="mb-4 h-32 w-32 rounded-2xl object-cover shadow-xl ring-2 ring-amber-400/40"
+        />
         <h1 className="text-4xl font-black tracking-tight">WHOT</h1>
-        <p className="mt-1 text-emerald-200">
+        <p className="mt-1 font-bold text-emerald-200">
           Nigerian card game · Elimination tournament
         </p>
 
-        <div className="mt-10 w-full max-w-md rounded-2xl border border-white/10 bg-black/20 p-6">
+        <div className="mt-10 w-full max-w-md rounded-2xl border border-white/10 bg-black/90 p-6">
           <h2 className="text-center text-lg font-bold text-emerald-100">
             Choose a game mode
           </h2>
@@ -58,8 +66,8 @@ export default function PlayerSetup({ onStart }: PlayerSetupProps) {
                   Tournament
                 </span>
               </div>
-              <p className="mt-1 text-sm text-emerald-200">
-                2–6 players. Highest hand is eliminated each round until one
+<p className="mt-1 text-sm text-emerald-200">
+                2–4 players. Highest hand is eliminated each round until one
                 champion remains.
               </p>
             </button>
@@ -71,7 +79,10 @@ export default function PlayerSetup({ onStart }: PlayerSetupProps) {
 
   // Step 2 (elimination only): choose the number of players.
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-emerald-900 via-emerald-800 to-teal-900 p-6 text-white">
+    <div
+      className="flex min-h-screen flex-col items-center justify-center bg-cover bg-center p-6 text-white"
+      style={{ backgroundImage: "url('/firstpagebackground.jpg')" }}
+    >
       <div className="text-6xl mb-4">🏆</div>
       <h1 className="text-4xl font-black tracking-tight">WHOT</h1>
       <p className="mt-1 text-emerald-200">Elimination tournament</p>
@@ -92,7 +103,7 @@ export default function PlayerSetup({ onStart }: PlayerSetupProps) {
           You are Player 1. The rest are bots.
         </p>
 
-        <div className="mt-5 grid grid-cols-5 gap-2">
+        <div className="mt-5 grid grid-cols-3 gap-2">
           {OPTIONS.map((n) => (
             <button
               key={n}

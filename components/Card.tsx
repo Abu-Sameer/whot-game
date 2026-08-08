@@ -52,7 +52,7 @@ export default function CardView({
   if (faceDown) {
     return (
       <div
-        className={`${SIZE_STYLES[size]} rounded-xl border-2 border-zinc-700 bg-gradient-to-br from-zinc-600 to-zinc-800 shadow-md ${className}`}
+        className={`${SIZE_STYLES[size]} rounded-xl border-2 border-zinc-700 bg-linear-to-br from-zinc-600 to-zinc-800 shadow-md ${className}`}
       />
     );
   }

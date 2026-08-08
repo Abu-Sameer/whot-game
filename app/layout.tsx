@@ -15,6 +15,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Whot Game",
   description: "A classic Nigerian Whot card game built with Next.js",
+  icons: {
+    icon: "/replacevercelicon.jpg",
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

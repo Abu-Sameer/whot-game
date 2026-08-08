@@ -1,6 +1,6 @@
 interface FaceDownCardProps {
   orientation?: "horizontal" | "vertical";
-  size?: "md" | "lg";
+  size?: "md" | "lg" | "xl";
   rotate?: number;
 }
 
@@ -11,12 +11,16 @@ export default function FaceDownCard({
 }: FaceDownCardProps) {
   const dims =
     orientation === "vertical"
-      ? size === "lg"
+      ? size === "xl"
+        ? "h-24 w-16"
+        : size === "lg"
+          ? "h-20 w-14"
+          : "h-14 w-10"
+      : size === "xl"
         ? "h-20 w-14"
-        : "h-14 w-10"
-      : size === "lg"
-        ? "h-16 w-11"
-        : "h-12 w-8";
+        : size === "lg"
+          ? "h-16 w-11"
+          : "h-12 w-8";
 
   return (
     <div
