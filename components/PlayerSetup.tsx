@@ -1,0 +1,128 @@
+"use client";
+
+import { useState } from "react";
+import type { GameMode } from "@/lib/types";
+
+interface PlayerSetupProps {
+  onStart: (numPlayers: number, mode: GameMode) => void;
+}
+
+const OPTIONS = [2, 3, 4, 5, 6];
+
+export default function PlayerSetup({ onStart }: PlayerSetupProps) {
+  const [mode, setMode] = useState<GameMode | null>(null);
+
+  // Step 1: choose a game mode.
+  if (mode === null) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-emerald-900 via-emerald-800 to-teal-900 p-6 text-white">
+        <div className="text-6xl mb-4">🃏</div>
+        <h1 className="text-4xl font-black tracking-tight">WHOT</h1>
+        <p className="mt-1 text-emerald-200">
+          Nigerian card game · Elimination tournament
+        </p>
+
+        <div className="mt-10 w-full max-w-md rounded-2xl border border-white/10 bg-black/20 p-6">
+          <h2 className="text-center text-lg font-bold text-emerald-100">
+            Choose a game mode
+          </h2>
+
+          <div className="mt-5 space-y-3">
+            <button
+              type="button"
+              onClick={() => {
+                setMode("1v1");
+                onStart(2, "1v1");
+              }}
+              className="w-full rounded-xl border border-amber-400/40 bg-emerald-700/40 p-4 text-left transition hover:scale-[1.02] hover:bg-emerald-600/40"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xl font-black">⚔️ 1 v 1</span>
+                <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-xs font-bold text-amber-300">
+                  Quick match
+                </span>
+              </div>
+              <p className="mt-1 text-sm text-emerald-200">
+                You vs one bot. First to empty their hand wins the match.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setMode("elimination")}
+              className="w-full rounded-xl border border-emerald-400/40 bg-emerald-700/40 p-4 text-left transition hover:scale-[1.02] hover:bg-emerald-600/40"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xl font-black">🏆 Elimination</span>
+                <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-xs font-bold text-amber-300">
+                  Tournament
+                </span>
+              </div>
+              <p className="mt-1 text-sm text-emerald-200">
+                2–6 players. Highest hand is eliminated each round until one
+                champion remains.
+              </p>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Step 2 (elimination only): choose the number of players.
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-emerald-900 via-emerald-800 to-teal-900 p-6 text-white">
+      <div className="text-6xl mb-4">🏆</div>
+      <h1 className="text-4xl font-black tracking-tight">WHOT</h1>
+      <p className="mt-1 text-emerald-200">Elimination tournament</p>
+
+      <div className="mt-10 w-full max-w-md rounded-2xl border border-white/10 bg-black/20 p-6">
+        <button
+          type="button"
+          onClick={() => setMode(null)}
+          className="mb-4 text-sm font-semibold text-emerald-300 transition hover:text-emerald-100"
+        >
+          ← Back to modes
+        </button>
+
+        <h2 className="text-center text-lg font-bold text-emerald-100">
+          How many players?
+        </h2>
+        <p className="mt-1 text-center text-sm text-emerald-200/80">
+          You are Player 1. The rest are bots.
+        </p>
+
+        <div className="mt-5 grid grid-cols-5 gap-2">
+          {OPTIONS.map((n) => (
+            <button
+              key={n}
+              type="button"
+              onClick={() => onStart(n, "elimination")}
+              className="rounded-xl bg-emerald-600 py-3 text-xl font-black text-white transition hover:scale-105 hover:bg-emerald-500"
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-6 rounded-xl border border-emerald-500/30 bg-emerald-600/10 p-4 text-sm text-emerald-100">
+          <div className="font-bold text-emerald-300">How it works</div>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            <li>Play Whot until one player empties their hand each round.</li>
+            <li>
+              The round winner is safe. The other players&apos; hand totals are
+              compared.
+            </li>
+            <li>
+              The player with the <b>highest</b> total is eliminated.
+            </li>
+            <li>
+              Remaining players start a new round — until only one player
+              remains as the champion.
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
