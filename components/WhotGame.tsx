@@ -683,23 +683,6 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
 
       {/* Human hand */}
       <div className="p-3">
-        {/* <div className="mb-2 flex items-center justify-between">
-          <span className="text-sm font-semibold">
-            Your hand ({g.players[0].hand.length})
-          </span>
-          {isHumanTurn && !pendingShape && g.holdAll && (
-            <button
-              type="button"
-              onClick={handleEndHoldAll}
-              className="rounded-lg bg-amber-500 px-3 py-1 text-sm font-bold text-white transition hover:bg-amber-400"
-            >
-              End Turn
-            </button>
-          )}
-          <span className="text-xs text-emerald-200">
-            Click a card to play it.
-          </span>
-        </div> */}
         <PlayerHand
           cards={g.players[0].hand}
           isActive={isHumanTurn && !pendingShape}
