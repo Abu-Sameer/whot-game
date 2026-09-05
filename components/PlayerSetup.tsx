@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { GameMode } from "@/lib/types";
+import InstallButton from "./InstallButton";
 
 interface PlayerSetupProps {
   onStart: (numPlayers: number, mode: GameMode) => void;
@@ -71,6 +72,10 @@ export default function PlayerSetup({ onStart }: PlayerSetupProps) {
                 champion remains.
               </p>
             </button>
+          </div>
+
+          <div className="mt-5 flex justify-center border-t border-white/10 pt-5">
+            <InstallButton />
           </div>
         </div>
       </div>

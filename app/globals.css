@@ -15,13 +15,51 @@
 html,
 body {
   height: 100%;
+  /* Fills the notch area with the table colour instead of white, and keeps
+     the address bar tinted to match on mobile. */
+  background: var(--background);
+  /* No rubber-band scroll or pull-to-refresh: this is a game board, not a
+     document, and a stray swipe should never bounce or reload it. */
+  overscroll-behavior: none;
 }
 
 body {
   margin: 0;
-  background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+}
+
+/*
+ * Installed-app frame. Keeps the UI clear of the notch and the home
+ * indicator, and removes the browser affordances that give a PWA away as a
+ * web page: blue tap flashes, long-press callouts, and text selection while
+ * dragging cards around.
+ */
+.app-frame {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  /* dvh tracks the collapsing mobile browser bars; svh is the safe floor. */
+  min-height: 100svh;
+}
+
+/*
+ * The board is laid out in rem units, so the root font size scales the whole
+ * table — cards, gaps and labels together — to fit any screen without a second
+ * layout.
+ *
+ * The middle row (side bot + pile + deck + side bot) is 36rem wide and the
+ * table is roughly 30rem tall, so the limit is whichever axis is tighter:
+ * width on a portrait phone, height on a landscape one. min() picks it, and
+ * clamp() stops it going below legibility or above the desktop default.
+ */
+html {
+  font-size: clamp(8.5px, min(2.6vw, 3vh), 16px);
 }
 
 /* Rule popup animation: pops up in the middle and fades out */

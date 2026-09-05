@@ -14,6 +14,7 @@ import {
   nextRound,
   handValue,
   ruleMessage,
+  multiPlayLabel,
 } from "@/lib/gameLogic";
 import ClassDiscardPile from "./DiscardPile";
 import DeckCard from "./DeckCard";
@@ -173,7 +174,11 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
   // stale closure (the user may chain several cards before the timer fires).
   const selectedIdsRef = useRef<Set<string>>(new Set());
   const selectedValueRef = useRef<number | null>(null);
-  const [popup, setPopup] = useState<string | null>(null);
+  const [popup, setPopup] = useState<{
+    title: string;
+    text: string;
+    detail?: string;
+  } | null>(null);
   const [rulePause, setRulePause] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [confirmQuit, setConfirmQuit] = useState(false);
@@ -188,11 +193,34 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
     return () => cancelAnimationFrame(id);
   }, [numPlayers, mode]);
 
-  function triggerPopup(cards: Card[]) {
-    const last = cards[cards.length - 1];
-    const msg = ruleMessage(last);
+  // `rejecting` is true when these cards are played in answer to a pending 5
+  // challenge — a single 5, or a double/triple of 5s, cancels the pick 3.
+  function triggerPopup(cards: Card[], rejecting = false) {
+    const count = cards.length;
+    const last = cards[count - 1];
+    const isRejection = rejecting && last.value === 5;
+    const msg = ruleMessage(last, { rejecting, count });
+
+    // A double/triple (or more) of the same number is worth announcing on its
+    // own, even when the number carries no special rule. The rejection message
+    // already names the double/triple, so it keeps its own headline.
+    if (count > 1 && !isRejection) {
+      const label = multiPlayLabel(count);
+      const number = last.value !== null ? `${last.value}s` : "Whots";
+      setPopup({
+        title: `🃏 ${label}!`,
+        text: `${label} ${number} played together!`,
+        detail: msg ?? undefined,
+      });
+      window.setTimeout(() => setPopup(null), 2200);
+      return;
+    }
+
     if (!msg) return;
-    setPopup(msg);
+    setPopup({
+      title: isRejection ? "🚫 Rejected!" : "⚡ Rule!",
+      text: msg,
+    });
     window.setTimeout(() => setPopup(null), 2200);
   }
 
@@ -215,7 +243,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
         if (five) {
           const next = playCard(game, game.currentPlayerIndex, five);
           setGame(() => next);
-          triggerPopup([five]);
+          triggerPopup([five], true);
           return;
         }
         const next = drawCard(game, game.currentPlayerIndex);
@@ -348,6 +376,16 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
     }
   }
 
+  // Rebuilds the selected cards in the order the player clicked them. A Set
+  // preserves insertion order, so the last card selected stays last in the
+  // array — and playCard/playCards make that one the new top card.
+  function selectedCardsInOrder(ids: Set<string>): Card[] {
+    const byId = new Map(g.players[0].hand.map((c) => [c.id, c]));
+    return [...ids]
+      .map((id) => byId.get(id))
+      .filter((c): c is Card => c !== undefined);
+  }
+
   function isRulePlay(cards: Card[]): boolean {
     if (cards.length > 1) return true;
     const c = cards[0];
@@ -359,7 +397,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
   function commitSelection() {
     const ids = selectedIdsRef.current;
     if (ids.size === 0) return;
-    const cards = g.players[0].hand.filter((c) => ids.has(c.id));
+    const cards = selectedCardsInOrder(ids);
     if (cards.length === 0) return;
 
     const last = cards[cards.length - 1];
@@ -368,6 +406,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
       return;
     }
 
+    const rejecting = g.fiveResponse;
     const next =
       cards.length === 1 ? playCard(g, 0, cards[0]) : playCards(g, 0, cards);
     setGame(() => next);
@@ -375,7 +414,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
     setSelectedValue(null);
     selectedIdsRef.current = new Set();
     selectedValueRef.current = null;
-    triggerPopup(cards);
+    triggerPopup(cards, rejecting);
     setRulePause(isRulePlay(cards));
   }
 
@@ -463,7 +502,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
 
   function handleShapePick(shape: Shape) {
     if (selectedIds.size === 0) return;
-    const cards = g.players[0].hand.filter((c) => selectedIds.has(c.id));
+    const cards = selectedCardsInOrder(selectedIds);
     if (cards.length === 0) return;
     const next = playCards(g, 0, cards, shape);
     setGame(() => next);
@@ -724,10 +763,17 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
       {popup && (
         <div className="pointer-events-none fixed inset-0 z-60 flex items-center justify-center">
           <div className="rule-pop rounded-2xl border-2 border-amber-400 bg-emerald-900/95 px-8 py-5 text-center shadow-2xl">
-            <div className="text-2xl font-black text-amber-300">⚡ Rule!</div>
-            <div className="mt-1 max-w-xs text-sm font-semibold text-white">
-              {popup}
+            <div className="text-2xl font-black text-amber-300">
+              {popup.title}
             </div>
+            <div className="mt-1 max-w-xs text-sm font-semibold text-white">
+              {popup.text}
+            </div>
+            {popup.detail && (
+              <div className="mt-1 max-w-xs text-xs font-medium text-emerald-200">
+                {popup.detail}
+              </div>
+            )}
           </div>
         </div>
       )}

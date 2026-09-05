@@ -159,12 +159,18 @@ export function playCards(
     ),
   };
 
+  // The card the player selected LAST goes face-up on the pile; the rest of
+  // the group slides underneath it into the discard pile.
   const newTop = { ...cards[cards.length - 1] };
   next.topCard = newTop;
   next.deck = [...state.deck];
   next.log = [...state.log];
-  // Previous top card joins the discard pile.
-  next.discardPile = [...state.discardPile, state.topCard];
+  // Previous top card, plus every played card except the new top.
+  next.discardPile = [
+    ...state.discardPile,
+    state.topCard,
+    ...cards.slice(0, -1),
+  ];
 
   next.log.push(
     `${player.name} played ${cards.length} cards together: ${cards
@@ -224,7 +230,9 @@ export function playCards(
     next.currentPlayerIndex = nextIndex;
     next.holdAll = false;
     log.push(
-      `${player.name} played a 5 — ${players[nextIndex].name} must draw 3 cards or play a 5 to pass it on!`,
+      state.fiveResponse
+        ? `${player.name} rejected the pick 3 with ${cards.length > 1 ? `${cards.length} 5s` : "a 5"} — ${players[nextIndex].name} must draw 3 cards or play a 5 to pass it on!`
+        : `${player.name} played a 5 — ${players[nextIndex].name} must draw 3 cards or play a 5 to pass it on!`,
     );
     next.log = log;
     next.jumpCount = 0;
@@ -353,7 +361,9 @@ export function playCard(
     next.currentPlayerIndex = nextIndex;
     next.holdAll = false;
     log.push(
-      `${player.name} played a 5 — ${players[nextIndex].name} must draw 3 cards or play a 5 to pass it on!`,
+      state.fiveResponse
+        ? `${player.name} rejected the pick 3 with a 5 — ${players[nextIndex].name} must draw 3 cards or play a 5 to pass it on!`
+        : `${player.name} played a 5 — ${players[nextIndex].name} must draw 3 cards or play a 5 to pass it on!`,
     );
     next.log = log;
     next.jumpCount = 0;
@@ -646,10 +656,37 @@ export function nextRound(state: GameState): GameState {
 }
 
 /**
+ * Human-readable label for how many same-numbered cards went down together.
+ * "Double" for 2, "Triple" for 3, and so on.
+ */
+export function multiPlayLabel(count: number): string {
+  switch (count) {
+    case 2:
+      return "Double";
+    case 3:
+      return "Triple";
+    case 4:
+      return "Quadruple";
+    default:
+      return `${count}x`;
+  }
+}
+
+/**
  * Returns a short, dramatic rule message for a played card, or null if the
  * card has no special rule. Used to show a pop-up notification in the UI.
  */
-export function ruleMessage(card: Card): string | null {
+export function ruleMessage(
+  card: Card,
+  opts?: { rejecting?: boolean; count?: number },
+): string | null {
+  // A 5 played while facing a 5 challenge cancels the pick-3 and hands it on.
+  // Same when the cancellation is done with a double or triple of 5s.
+  if (opts?.rejecting && card.value === 5) {
+    const count = opts.count ?? 1;
+    const label = count > 1 ? `${multiPlayLabel(count)} 5` : "A 5";
+    return `${label} — pick 3 rejected and passed on! 🚫`;
+  }
   if (card.shape === "whot") return "WHOT! Pick a new shape 🔥";
   switch (card.value) {
     case 1:
