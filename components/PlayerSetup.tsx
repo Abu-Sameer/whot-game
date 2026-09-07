@@ -72,10 +72,10 @@ export default function PlayerSetup({ onStart, onNearby }: PlayerSetupProps) {
   if (mode === null) {
     return (
       <div
-        className="flex h-full flex-col overflow-y-auto bg-cover bg-center text-white"
+        className={SCREEN}
         style={{ backgroundImage: "url('/firstpagebackground.jpg')" }}
       >
-        <div className="m-auto flex w-full flex-col items-center p-4">
+        <div className={PANEL}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/gamelogoatthestart.jpg"
@@ -156,10 +156,10 @@ export default function PlayerSetup({ onStart, onNearby }: PlayerSetupProps) {
   // Step 2 (elimination only): choose the number of players.
   return (
     <div
-      className="flex h-full flex-col overflow-y-auto bg-cover bg-center text-white"
+      className={SCREEN}
       style={{ backgroundImage: "url('/firstpagebackground.jpg')" }}
     >
-      <div className="m-auto flex w-full max-w-md flex-col items-center p-4">
+      <div className={PANEL}>
         <div className="mb-2 text-4xl">🏆</div>
         <h1 className="text-3xl font-black tracking-tight">WHOT</h1>
         <p className="mt-1 text-emerald-200">Elimination tournament</p>
@@ -168,7 +168,7 @@ export default function PlayerSetup({ onStart, onNearby }: PlayerSetupProps) {
           <button
             type="button"
             onClick={() => setMode(null)}
-            className="mb-3 p-3 text-sm font-semibold text-emerald-300 transition hover:text-emerald-100"
+            className="mb-3 text-sm font-semibold text-emerald-300 transition hover:text-emerald-100"
           >
             ← Back to modes
           </button>
@@ -250,7 +250,7 @@ function NameSeats({ numPlayers, mode, onBack, onStart }: NameSeatsProps) {
 
   return (
     <div
-      className="flex h-full flex-col overflow-y-auto bg-cover bg-center text-white"
+      className={SCREEN}
       style={{ backgroundImage: "url('/firstpagebackground.jpg')" }}
     >
       <div className="m-auto flex w-full max-w-md flex-col items-center p-4">
@@ -269,7 +269,7 @@ function NameSeats({ numPlayers, mode, onBack, onStart }: NameSeatsProps) {
           <button
             type="button"
             onClick={onBack}
-            className="mb-3 p-3 text-sm font-semibold text-emerald-300 transition hover:text-emerald-100"
+            className="mb-3 text-sm font-semibold text-emerald-300 transition hover:text-emerald-100"
           >
             ← Back
           </button>
@@ -281,7 +281,7 @@ function NameSeats({ numPlayers, mode, onBack, onStart }: NameSeatsProps) {
             Tap past any you are happy with.
           </p>
 
-          <div className="mt-4 px-3 space-y-2">
+          <div className="mt-4 space-y-2">
             {names.map((name, i) => (
               <label key={i} className="flex items-center gap-3">
                 <span className="w-16 shrink-0 text-sm font-semibold text-emerald-300">
@@ -305,7 +305,7 @@ function NameSeats({ numPlayers, mode, onBack, onStart }: NameSeatsProps) {
             ))}
           </div>
 
-          <div className="flex justify-center mb-3">
+          <div className="flex justify-center">
             <button
               type="submit"
               className="mt-5 items-center rounded-xl bg-emerald-600 px-6 py-3 font-bold text-white transition hover:bg-emerald-500"

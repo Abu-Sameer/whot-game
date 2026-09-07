@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Card, GameMode, Player, Shape } from "@/lib/types";
 import type { GameState, Seat } from "@/lib/gameLogic";
 import {
+  HAND_SIZE,
   initGame,
   canPlay,
   playCard,
@@ -197,6 +198,8 @@ interface BotAreaProps {
   // "right" = standing sideways, cards face inward (left), name against wall (right).
   side?: "top" | "left" | "right";
   singleRow?: boolean; // if true, don't wrap cards into multiple rows
+  /** True while the round is still being dealt, so arriving cards animate in. */
+  dealing?: boolean;
 }
 
 /** Whether a play trips a rule worth holding the bots back a moment for. */
@@ -215,6 +218,9 @@ const CARDS_PER_ROW = 5;
 // How long to wait after the last selection before auto-playing the
 // selected card(s). Lets the player chain multiple same-numbered cards.
 const COMMIT_DELAY = 700;
+// Gap between one card being handed out and the next. Fast enough to feel
+// like a dealer's hands, slow enough to follow whose card is whose.
+const DEAL_STEP = 500;
 
 function BotArea({
   name,
@@ -223,6 +229,7 @@ function BotArea({
   maxCards,
   side = "top",
   singleRow = false,
+  dealing = false,
 }: BotAreaProps) {
   const isSide = side === "left" || side === "right";
   const visibleCount = Math.min(
@@ -289,7 +296,12 @@ function BotArea({
           }`}
         >
           {row.map((_, i) => (
-            <FaceDownCard key={i} size="xl" rotate={isSide ? cardRotate : 0} />
+            <FaceDownCard
+              key={i}
+              size="xl"
+              rotate={isSide ? cardRotate : 0}
+              className={dealing ? "deal-in" : ""}
+            />
           ))}
         </div>
       ))}
@@ -355,6 +367,17 @@ function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
 
   const isGuest = net?.role === "guest";
 
+  // Cards go round the table one at a time when a round is dealt, so everyone
+  // can watch the hands being shared out instead of finding them already
+  // there. `landed` counts how many have been placed: each seat draws only
+  // that many of its cards, and the rest are still shown sitting in the deck.
+  // Nothing is faked — this is the real deal, played out in the order
+  // dealRound used.
+  const [landed, setLanded] = useState(0);
+  // The deal `landed` belongs to, so fresh cards restart it and an ordinary
+  // move does not.
+  const dealtId = useRef<string | null>(null);
+
   // Lets the frame handler read the table as it stands when a frame lands,
   // rather than as it stood when the handler was made.
   const gameRef = useRef<GameState | null>(null);
@@ -405,6 +428,28 @@ function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
     // Nothing in here changes between renders, so the frame handler below can
     // depend on it without being rebuilt after every move.
   }, []);
+
+  // Cards that have not been dealt out on this screen yet — the opening hand,
+  // a new round after an elimination, a restart, or the host's first frame
+  // arriving at a guest. Each of those starts the cards moving again, and an
+  // ordinary move does not.
+  useEffect(() => {
+    if (!game) return;
+    if (dealtId.current === game.dealId) return;
+    dealtId.current = game.dealId;
+    setLanded(0);
+  }, [game]);
+
+  useEffect(() => {
+    if (!game) return;
+    const seats = game.players.filter((player) => player.active).length;
+    if (landed >= seats * HAND_SIZE) return;
+    const id = setTimeout(() => {
+      setLanded((count) => count + 1);
+      playSound("drawCard");
+    }, DEAL_STEP);
+    return () => clearTimeout(id);
+  }, [game, landed]);
 
   // Frames from the other phones. As a guest they are the table as the host
   // now has it, along with which seat is mine. Hosting, they are a request
@@ -462,6 +507,9 @@ function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
     // The host plays the bots for the whole table. If a guest ran them too,
     // both phones would decide the same bot's move separately.
     if (isGuest) return;
+    // Not until everyone has their cards.
+    const seated = game.players.filter((player) => player.active).length;
+    if (landed < seated * HAND_SIZE) return;
     if (game.gameOver || game.roundOver) return;
     if (pendingShape) return;
     if (isPaused) return;
@@ -518,7 +566,16 @@ function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
     }, delay);
 
     return () => clearTimeout(timer);
-  }, [game, pendingShape, rulePause, isPaused, isGuest, commit, triggerPopup]);
+  }, [
+    game,
+    pendingShape,
+    rulePause,
+    isPaused,
+    isGuest,
+    landed,
+    commit,
+    triggerPopup,
+  ]);
 
   // Play a sound whenever a card is played (by anyone). We detect this by
   // watching the top card change while the round is still active.
@@ -589,10 +646,41 @@ function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
 
   const g = game; // non-null local alias for the handler closures
   const currentPlayer = g.players[g.currentPlayerIndex];
+
+  // The seats a round is dealt to, in the order dealRound hands cards out:
+  // one each, five times round, skipping anyone already eliminated.
+  const dealOrder = g.players
+    .map((player, index) => ({ player, index }))
+    .filter((entry) => entry.player.active)
+    .map((entry) => entry.index);
+  const dealTotal = dealOrder.length * HAND_SIZE;
+  const dealing = landed < dealTotal;
+  // Whose card is in the air, for the caption under the pile.
+  const dealingTo = dealing
+    ? g.players[dealOrder[landed % dealOrder.length]]
+    : null;
+
+  /** How many of a seat's cards have reached them so far. */
+  function dealtTo(index: number): number {
+    const held = g.players[index].hand.length;
+    if (!dealing) return held;
+    const place = dealOrder.indexOf(index);
+    if (place < 0) return 0;
+    const round = Math.floor(
+      (landed + dealOrder.length - 1 - place) / dealOrder.length,
+    );
+    return Math.min(held, Math.max(0, round));
+  }
+
   // My turn, rather than any human's turn: in a game across phones the other
-  // people are humans too, and their turn is not mine to play.
+  // people are humans too, and their turn is not mine to play. And nobody's
+  // turn until the cards are all out.
   const isHumanTurn =
-    g.currentPlayerIndex === seat && !g.gameOver && !g.roundOver && !isPaused;
+    g.currentPlayerIndex === seat &&
+    !dealing &&
+    !g.gameOver &&
+    !g.roundOver &&
+    !isPaused;
 
   const effectiveShape: Shape = g.topCard.shape;
 
@@ -900,7 +988,8 @@ function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
           {topBot && (
             <BotArea
               name={topBot.player.name}
-              count={topBot.player.hand.length}
+              count={dealtTo(topBot.index)}
+              dealing={dealing}
               isTurn={
                 g.currentPlayerIndex === topBot.index &&
                 !g.gameOver &&
@@ -922,7 +1011,8 @@ function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
             {g.mode !== "1v1" && leftBot && (
               <BotArea
                 name={leftBot.player.name}
-                count={leftBot.player.hand.length}
+                count={dealtTo(leftBot.index)}
+                dealing={dealing}
                 side="left"
                 isTurn={
                   g.currentPlayerIndex === leftBot.index &&
@@ -936,7 +1026,14 @@ function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
           {/* Center: discard pile + deck + status */}
           <div className="flex shrink-0 flex-col items-center justify-center gap-2">
             <div className="flex items-center justify-center gap-4">
-              {g.topCard && <ClassDiscardPile topCard={g.topCard} />}
+              {/* The starting card is turned up only once everyone has been
+              dealt to, so the placeholder keeps the table from shifting under
+              the cards while they are still going out. */}
+              {dealing ? (
+                <div className="h-40 w-28 rounded-xl border-2 border-dashed border-white/20" />
+              ) : (
+                g.topCard && <ClassDiscardPile topCard={g.topCard} />
+              )}
               <button
                 type="button"
                 onClick={handleDraw}
@@ -944,19 +1041,37 @@ function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
                 title={isHumanTurn ? "Click to draw a card" : ""}
                 className="relative h-40 w-28 rounded-xl transition hover:scale-105 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <DeckCard count={g.deck.length} />
+                {/* Cards left to come: the deck proper, plus the ones still to
+                be dealt and the starting card yet to be turned up. */}
+                <DeckCard
+                  count={
+                    dealing
+                      ? g.deck.length + 1 + (dealTotal - landed)
+                      : g.deck.length
+                  }
+                />
               </button>
             </div>
 
             {/* Status text */}
             <div className="flex flex-col items-center gap-1 text-sm text-emerald-200">
-              <div>
-                Current shape:{" "}
-                <span className="font-bold text-white">
-                  {describeShape(effectiveShape)}
-                </span>
-              </div>
-              {!isHumanTurn && !g.gameOver && !g.roundOver && (
+              {dealing ? (
+                <div className="text-sm font-semibold text-amber-300">
+                  Dealing to{" "}
+                  <span className="font-bold text-white">
+                    {dealingTo?.name}
+                  </span>
+                  …
+                </div>
+              ) : (
+                <div>
+                  Current shape:{" "}
+                  <span className="font-bold text-white">
+                    {describeShape(effectiveShape)}
+                  </span>
+                </div>
+              )}
+              {!dealing && !isHumanTurn && !g.gameOver && !g.roundOver && (
                 <div className="animate-pulse text-sm text-amber-300">
                   {currentPlayer?.name} is thinking...
                 </div>
@@ -973,7 +1088,8 @@ function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
             {g.mode !== "1v1" && rightBot && (
               <BotArea
                 name={rightBot.player.name}
-                count={rightBot.player.hand.length}
+                count={dealtTo(rightBot.index)}
+                dealing={dealing}
                 side="right"
                 isTurn={
                   g.currentPlayerIndex === rightBot.index &&
@@ -989,7 +1105,8 @@ function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
       {/* Human hand */}
       <div className="shrink-0">
         <PlayerHand
-          cards={g.players[seat].hand}
+          cards={g.players[seat].hand.slice(0, dealtTo(seat))}
+          dealing={dealing}
           isActive={isHumanTurn && !pendingShape}
           isHuman
           playableIds={humanPlayable}

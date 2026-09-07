@@ -2,6 +2,8 @@ import { createDeck, shuffle } from "./deck";
 import type { Card, GameMode, Player, Shape } from "./types";
 
 export interface GameState {
+  // Changes every time cards are dealt. See lib/types.ts.
+  dealId: string;
   // Game mode: "1v1" = single round vs one bot, "elimination" = tournament.
   mode: GameMode;
   players: Player[];
@@ -58,7 +60,8 @@ export function canPlay(
   return false;
 }
 
-const HAND_SIZE = 5;
+/** Cards each player is dealt at the start of a round. */
+export const HAND_SIZE = 5;
 
 /**
  * Creates a fresh round for the given (active) players.
@@ -94,6 +97,7 @@ function dealRound(
   ];
 
   return {
+    dealId: `${roundNumber}-${Math.random().toString(36).slice(2, 10)}`,
     mode,
     players,
     currentPlayerIndex: 0,

@@ -31,6 +31,11 @@ export interface RoundElimination {
 }
 
 export interface GameState {
+  // Changes every time cards are dealt. That is what lets the board tell a
+  // fresh hand from an ordinary move — a new round, or the same round number
+  // dealt again after a restart — and because it travels with the state, a
+  // guest's screen can tell them apart too.
+  dealId: string;
   // Game mode: "1v1" = single round vs one bot, "elimination" = tournament.
   mode: GameMode;
   players: Player[];

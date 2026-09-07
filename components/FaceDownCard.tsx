@@ -2,12 +2,14 @@ interface FaceDownCardProps {
   orientation?: "horizontal" | "vertical";
   size?: "md" | "lg" | "xl";
   rotate?: number;
+  className?: string;
 }
 
 export default function FaceDownCard({
   orientation = "horizontal",
   size = "md",
   rotate = 0,
+  className = "",
 }: FaceDownCardProps) {
   const dims =
     orientation === "vertical"
@@ -24,7 +26,7 @@ export default function FaceDownCard({
 
   return (
     <div
-      className={`relative overflow-hidden rounded ${dims}`}
+      className={`relative overflow-hidden rounded ${dims} ${className}`}
       style={rotate ? { transform: `rotate(${rotate}deg)` } : undefined}
     >
       <svg

@@ -12,6 +12,8 @@ interface PlayerHandProps {
   selectedIds: Set<string>;
   selectedValue: number | null;
   onSelect: (card: CardType) => void;
+  /** True while the round is still being dealt, so arriving cards animate in. */
+  dealing?: boolean;
 }
 
 // Card size "lg" is w-28 (7rem) wide, and cards sit 0.5rem apart when the hand
@@ -31,6 +33,7 @@ export default function PlayerHand({
   selectedIds,
   selectedValue,
   onSelect,
+  dealing = false,
 }: PlayerHandProps) {
   const rowRef = useRef<HTMLDivElement>(null);
   // Margin between cards, in px. Negative once they have to overlap. Starts at
@@ -93,7 +96,9 @@ export default function PlayerHand({
             onClick={playable ? () => onSelect(card) : undefined}
             // Cards later in the hand overlap the ones before them, so a card
             // being picked has to come up out of the fan to be seen whole.
-            className={`shrink-0 ${selected ? "z-20" : "hover:z-10"}`}
+            className={`shrink-0 ${selected ? "z-20" : "hover:z-10"} ${
+              dealing ? "deal-in" : ""
+            }`}
             style={{ marginLeft: i === 0 ? 0 : margin }}
           />
         );
