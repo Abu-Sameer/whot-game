@@ -379,8 +379,8 @@ function BotArea({
 
   return (
     <div
-      className={`flex shrink-0 items-center gap-5 ${
-        isSide ? "flex-row" : "flex-col"
+      className={`flex shrink-0 items-center ${
+        isSide ? "flex-row gap-4" : "flex-col gap-1"
       }`}
     >
       {showNameFirst && namePill}

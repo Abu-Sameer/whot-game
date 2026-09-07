@@ -5,6 +5,7 @@ import type { GameMode } from "@/lib/types";
 import type { Seat } from "@/lib/gameLogic";
 import { BOT_NAMES } from "@/lib/gameLogic";
 import { speak } from "@/lib/sound";
+import ExitButton from "./ExitButton";
 import InstallButton from "./InstallButton";
 
 interface PlayerSetupProps {
@@ -27,13 +28,6 @@ const SCREEN =
   "flex h-full flex-col overflow-y-auto bg-cover bg-center text-white";
 const PANEL = "m-auto flex w-full flex-col items-center p-4";
 
-/**
- * What a seat's field starts out holding.
- *
- * The bots come pre-named. The person playing starts blank, so the first time
- * through they are prompted to put their own name in rather than being handed
- * one — after that it is remembered, and editable like any of the others.
- */
 function defaultName(index: number): string {
   return index === 0 ? "" : (BOT_NAMES[index - 1] ?? `Player ${index}`);
 }
@@ -50,7 +44,6 @@ function storedNames(): string[] {
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((n): n is string => typeof n === "string");
   } catch {
-    // No storage, or something else wrote nonsense there. Defaults will do.
     return [];
   }
 }
@@ -62,8 +55,6 @@ export default function PlayerSetup({
   defaultPlayers,
 }: PlayerSetupProps) {
   const [mode, setMode] = useState<GameMode | null>(null);
-  // Set once the mode and player count are settled — the point at which the
-  // table is known and there are names to ask for.
   const [naming, setNaming] = useState<{
     numPlayers: number;
     mode: GameMode;
@@ -101,14 +92,7 @@ export default function PlayerSetup({
         style={{ backgroundImage: "url('/firstpagebackground.jpg')" }}
       >
         <div className={PANEL}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/gamelogoatthestart.jpg"
-            alt="Whot game logo"
-            className="mb-3 h-20 w-20 rounded-2xl object-cover shadow-xl ring-2 ring-amber-400/40"
-          />
-          <h1 className="text-3xl font-black tracking-tight">WHOT</h1>
-          <p className="mt-1 text-center font-bold text-emerald-200">
+          <p className="mt-1 text-center font-bold text-white/80">
             Nigerian card game · Elimination tournament
           </p>
 
@@ -184,6 +168,7 @@ export default function PlayerSetup({
                 ⚙️ Settings
               </button>
               <InstallButton />
+              <ExitButton />
             </div>
           </div>
         </div>
