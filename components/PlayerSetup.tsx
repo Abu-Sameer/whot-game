@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { GameMode } from "@/lib/types";
 import type { Seat } from "@/lib/gameLogic";
+import { BOT_NAMES } from "@/lib/gameLogic";
+import { speak } from "@/lib/sound";
 import InstallButton from "./InstallButton";
 
 interface PlayerSetupProps {
@@ -25,9 +27,20 @@ const SCREEN =
   "flex h-full flex-col overflow-y-auto bg-cover bg-center text-white";
 const PANEL = "m-auto flex w-full flex-col items-center p-4";
 
-/** The name a seat carries unless somebody changes it. */
+/**
+ * What a seat's field starts out holding.
+ *
+ * The bots come pre-named. The person playing starts blank, so the first time
+ * through they are prompted to put their own name in rather than being handed
+ * one — after that it is remembered, and editable like any of the others.
+ */
 function defaultName(index: number): string {
-  return index === 0 ? "You" : `Player ${index}`;
+  return index === 0 ? "" : (BOT_NAMES[index - 1] ?? `Player ${index}`);
+}
+
+/** What a seat ends up called if its field is left empty anyway. */
+function fallbackName(index: number): string {
+  return defaultName(index) || "You";
 }
 
 function storedNames(): string[] {
@@ -55,6 +68,10 @@ export default function PlayerSetup({
     numPlayers: number;
     mode: GameMode;
   } | null>(null);
+
+  useEffect(() => {
+    if (mode === "elimination" && !naming) speak("howManyPlayers");
+  }, [mode, naming]);
 
   function askNames(numPlayers: number, chosen: GameMode) {
     setMode(chosen);
@@ -103,7 +120,10 @@ export default function PlayerSetup({
             <div className="mt-4 space-y-3">
               <button
                 type="button"
-                onClick={() => askNames(2, "1v1")}
+                onClick={() => {
+                  speak("mode1v1");
+                  askNames(2, "1v1");
+                }}
                 className="w-full rounded-xl border border-amber-400/40 bg-emerald-700/40 p-3 text-left transition hover:scale-[1.02] hover:bg-emerald-600/40"
               >
                 <div className="flex items-center justify-between gap-2">
@@ -119,7 +139,10 @@ export default function PlayerSetup({
 
               <button
                 type="button"
-                onClick={() => setMode("elimination")}
+                onClick={() => {
+                  speak("modeElimination");
+                  setMode("elimination");
+                }}
                 className="w-full rounded-xl border border-emerald-400/40 bg-emerald-700/40 p-3 text-left transition hover:scale-[1.02] hover:bg-emerald-600/40"
               >
                 <div className="flex items-center justify-between gap-2">
@@ -257,7 +280,7 @@ function NameSeats({ numPlayers, mode, onBack, onStart }: NameSeatsProps) {
     // A blank field means "this one can be called whatever", so it falls back
     // to the seat default rather than holding the game up over an empty box.
     const seats: Seat[] = names.map((raw, i) => ({
-      name: raw.trim().slice(0, MAX_NAME) || defaultName(i),
+      name: raw.trim().slice(0, MAX_NAME) || fallbackName(i),
       isHuman: i === 0,
     }));
     try {
@@ -315,7 +338,7 @@ function NameSeats({ numPlayers, mode, onBack, onStart }: NameSeatsProps) {
                     setNames(next);
                   }}
                   maxLength={MAX_NAME}
-                  placeholder={defaultName(i)}
+                  placeholder={i === 0 ? "Your name" : defaultName(i)}
                   aria-label={i === 0 ? "Your name" : `Bot ${i} name`}
                   autoComplete="off"
                   spellCheck={false}

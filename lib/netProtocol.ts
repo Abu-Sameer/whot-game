@@ -12,7 +12,14 @@
  */
 import type { Card, Shape } from "./types";
 import type { GameState } from "./gameLogic";
-import { drawCard, endTurn, nextRound, playCard, playCards } from "./gameLogic";
+import {
+  canFinishOn,
+  drawCard,
+  endTurn,
+  nextRound,
+  playCard,
+  playCards,
+} from "./gameLogic";
 
 export type NetRole = "host" | "guest";
 
@@ -115,6 +122,8 @@ export interface GuestMove {
   cards: Card[];
   /** Whether the play was an answer to a pending 5. */
   rejecting: boolean;
+  /** Whether the play carried on from a 1, rather than starting a turn. */
+  continuing: boolean;
 }
 
 /**
@@ -133,7 +142,7 @@ export function applyGuestMove(
   message: NetMessage,
   seat: number,
 ): GuestMove | null {
-  const unchanged = { cards: [], rejecting: false };
+  const unchanged = { cards: [], rejecting: false, continuing: false };
 
   if (message.type === "nextRound") {
     // Any player may ask to move on, so being asked twice has to be harmless.
@@ -159,12 +168,25 @@ export function applyGuestMove(
       if (cards.length === 0 || cards.length !== message.cardIds.length) {
         return null;
       }
+      // Playing several at once is a rule of its own, and it can be off.
+      if (cards.length > 1 && !state.rules.doubles) return null;
+      // A round cannot be finished on a card that carries a rule, so a play
+      // that would empty the hand has to end on one that can. The card that
+      // lands is the last of the group.
+      if (
+        cards.length === hand.length &&
+        !canFinishOn(cards[cards.length - 1], state.rules)
+      ) {
+        return null;
+      }
       const rejecting = state.fiveResponse;
+      // Read before the play, because playing is what clears it.
+      const continuing = state.holdAll;
       const next =
         cards.length === 1
           ? playCard(state, seat, cards[0], message.shape)
           : playCards(state, seat, cards, message.shape);
-      return { state: next, cards, rejecting };
+      return { state: next, cards, rejecting, continuing };
     }
     default:
       return null;

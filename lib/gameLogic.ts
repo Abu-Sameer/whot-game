@@ -1,7 +1,9 @@
 import { createDeck, shuffle } from "./deck";
-import type { Card, Difficulty, GameMode, Player, Shape } from "./types";
+import type { Card, Difficulty, GameMode, Player, Rules, Shape } from "./types";
 
 export interface GameState {
+  // Which rules this game is being played by, fixed when the cards are dealt.
+  rules: Rules;
   // Changes every time cards are dealt. See lib/types.ts.
   dealId: string;
   // Game mode: "1v1" = single round vs one bot, "elimination" = tournament.
@@ -32,7 +34,8 @@ export interface GameState {
   // any card (any number or shape) before the next player's turn.
   holdAll: boolean;
   // When a 5 is played, the next player may respond by playing their own 5 to
-  // escape the draw-3 penalty (passing it along), or by drawing 3 cards.
+  // cancel the draw-3 penalty outright, or by drawing 3 cards. A cancelling 5
+  // ends the challenge rather than handing it on.
   // True while the current player must make that choice.
   fiveResponse: boolean;
   // Played cards (excluding the current topCard). Used to reshuffle the deck
@@ -60,29 +63,55 @@ export function canPlay(
   return false;
 }
 
+/**
+ * The next player still in the game, walking in `direction` from `from`.
+ *
+ * Eliminated players keep their place at the table rather than being taken out
+ * of the list, so every step round it has to walk past them — a penalty or a
+ * skip aimed at an empty chair would otherwise land on nobody.
+ */
+function nextActive(
+  players: Player[],
+  from: number,
+  direction: 1 | -1,
+): number {
+  const n = players.length;
+  let index = (from + direction + n) % n;
+  for (let guard = 0; guard < n && !players[index].active; guard++) {
+    index = (index + direction + n) % n;
+  }
+  return index;
+}
+
 /** Cards each player is dealt at the start of a round. */
 export const HAND_SIZE = 5;
 
 /**
- * Creates a fresh round for the given (active) players.
- * Each active player gets 5 cards; the next card is flipped as the top card.
+ * Creates a fresh round for the given table.
+ *
+ * Everyone keeps the place they had, eliminated players included — they simply
+ * are not dealt to. Taking them out of the list instead would shuffle everyone
+ * after them up a seat, and a player who spent the last round on your left
+ * would suddenly be sitting opposite you.
  */
 function dealRound(
-  playerNames: { name: string; isHuman: boolean }[],
+  seats: { name: string; isHuman: boolean; active?: boolean }[],
   roundNumber: number,
   mode: GameMode,
+  rules: Rules,
 ): GameState {
   const deck = shuffle(createDeck());
 
-  const players: Player[] = playerNames.map((p) => ({
+  const players: Player[] = seats.map((p) => ({
     name: p.name,
     hand: [],
     isHuman: p.isHuman,
-    active: true,
+    active: p.active ?? true,
   }));
 
+  const dealtTo = players.filter((p) => p.active);
   for (let i = 0; i < HAND_SIZE; i++) {
-    for (const p of players) {
+    for (const p of dealtTo) {
       const c = deck.pop();
       if (c) p.hand.push(c);
     }
@@ -100,7 +129,10 @@ function dealRound(
     dealId: `${roundNumber}-${Math.random().toString(36).slice(2, 10)}`,
     mode,
     players,
-    currentPlayerIndex: 0,
+    currentPlayerIndex: Math.max(
+      0,
+      players.findIndex((p) => p.active),
+    ),
     topCard,
     direction: 1,
     deck,
@@ -116,8 +148,62 @@ function dealRound(
     holdAll: false,
     fiveResponse: false,
     discardPile: [],
+    rules,
   };
 }
+
+/** How the game plays unless somebody changes it in Settings. */
+export const DEFAULT_RULES: Rules = {
+  pick2: true,
+  pick3: true,
+  suspension: true,
+  holdAll: true,
+  endOnSpecial: false,
+  doubles: true,
+};
+
+/** Whether the rule a card carries is switched on in this game. */
+function ruleActive(value: number | null, rules: Rules): boolean {
+  switch (value) {
+    case 1:
+      return rules.holdAll;
+    case 2:
+      return rules.pick2;
+    case 5:
+      return rules.pick3;
+    case 8:
+      return rules.suspension;
+    default:
+      // 14 and the plain numbers are not switchable.
+      return true;
+  }
+}
+
+// Numbers a round cannot be finished on. Every one of them carries a rule
+// that needs somebody to still be holding cards afterwards: Hold All and
+// general market both hand the turn straight back, a suspension is a skip
+// aimed at the next player, and a Whot asks for a shape to follow. Whot cards
+// are the 20s.
+const CANNOT_FINISH = new Set([1, 8, 14, 20]);
+
+/**
+ * Whether a round may be ended on this card.
+ *
+ * Holding one of these as your last card means going to market instead — you
+ * cannot win on it.
+ */
+export function canFinishOn(card: Card, rules: Rules): boolean {
+  if (rules.endOnSpecial) return true;
+  if (card.shape === "whot") return false;
+  if (card.value === null) return false;
+  // A card whose rule is switched off is an ordinary number, and an ordinary
+  // number can finish a round.
+  if (!ruleActive(card.value, rules)) return true;
+  return !CANNOT_FINISH.has(card.value);
+}
+
+/** What the bots are called unless somebody renames them. */
+export const BOT_NAMES = ["Ola", "Ade", "Dele"];
 
 /** One place at the table: who sits there, and whether a person plays it. */
 export interface Seat {
@@ -138,6 +224,7 @@ export function initGame(
   numPlayers = 4,
   mode: GameMode = "elimination",
   seats?: Seat[],
+  rules?: Rules,
 ): GameState {
   const count = Math.max(2, Math.min(4, Math.floor(numPlayers)));
   const table: Seat[] = seats?.length
@@ -145,11 +232,11 @@ export function initGame(
     : [
         { name: "You", isHuman: true },
         ...Array.from({ length: count - 1 }, (_, i) => ({
-          name: `Player ${i + 1}`,
+          name: BOT_NAMES[i] ?? `Player ${i + 1}`,
           isHuman: false,
         })),
       ];
-  return dealRound(table, 1, mode);
+  return dealRound(table, 1, mode, rules ?? DEFAULT_RULES);
 }
 
 export function describeCard(card: Card): string {
@@ -216,14 +303,19 @@ export function playCards(
     return next;
   }
 
-  const cardValue = lastCard.value;
-  const n = state.players.length;
+  // Hand-built states (the dev scripts) may not carry rules; fall back rather
+  // than crash on them.
+  const rules = state.rules ?? DEFAULT_RULES;
+  // A card whose rule is switched off keeps its number but loses its effect,
+  // so every branch below misses it and the turn simply passes on.
+  const cardValue = ruleActive(lastCard.value, rules) ? lastCard.value : null;
   // The immediate next player in the current direction.
-  const nextIndex = (playerIndex + state.direction + n) % n;
+  const nextIndex = nextActive(state.players, playerIndex, state.direction);
   // The player who plays after the penalty row (skipping the drawn player).
-  const afterIndex = (nextIndex + state.direction + n) % n;
+  const afterIndex = nextActive(state.players, nextIndex, state.direction);
   // For skip cards (star / 8), the turn jumps to the player after the next one.
-  const skipIndex = (playerIndex + 2 * state.direction + n) % n;
+  // The seat after the skipped one is the same seat as after a penalty.
+  const skipIndex = afterIndex;
 
   let deck = next.deck;
   let players = next.players;
@@ -242,16 +334,28 @@ export function playCards(
       `${player.name} played a 2 — ${players[nextIndex].name} draws 2 cards and is skipped.`,
     );
   } else if (cardValue === 5) {
-    // A 5 challenges the next player: they may respond with their own 5 to
-    // escape the draw-3 penalty (passing it along), or draw 3 cards. We set up
-    // that response state here and let playCard/playCards/drawCard resolve it.
+    if (state.fiveResponse) {
+      // These 5s were played to answer a pick 3, and answering it cancels it
+      // outright: the challenge ends here rather than being handed along, and
+      // the next player takes an ordinary turn with no penalty to serve.
+      next.fiveResponse = false;
+      next.currentPlayerIndex = nextIndex;
+      next.holdAll = false;
+      log.push(
+        `${player.name} cancelled the pick 3 with ${cards.length > 1 ? `${cards.length} 5s` : "a 5"} — ${players[nextIndex].name} plays on.`,
+      );
+      next.log = log;
+      next.jumpCount = 0;
+      return next;
+    }
+    // A fresh 5 challenges the next player: they may answer with their own 5
+    // to cancel it, or draw 3 cards. We set up that response state here and
+    // let playCard/playCards/drawCard resolve it.
     next.fiveResponse = true;
     next.currentPlayerIndex = nextIndex;
     next.holdAll = false;
     log.push(
-      state.fiveResponse
-        ? `${player.name} rejected the pick 3 with ${cards.length > 1 ? `${cards.length} 5s` : "a 5"} — ${players[nextIndex].name} must draw 3 cards or play a 5 to pass it on!`
-        : `${player.name} played a 5 — ${players[nextIndex].name} must draw 3 cards or play a 5 to pass it on!`,
+      `${player.name} played a 5 — ${players[nextIndex].name} must draw 3 cards or play a 5 to cancel it!`,
     );
     next.log = log;
     next.jumpCount = 0;
@@ -348,14 +452,17 @@ export function playCard(
     return next;
   }
 
-  const cardValue = card.value;
-  const n = state.players.length;
+  const rules = state.rules ?? DEFAULT_RULES;
+  // A card whose rule is switched off keeps its number but loses its effect,
+  // so every branch below misses it and the turn simply passes on.
+  const cardValue = ruleActive(card.value, rules) ? card.value : null;
   // The immediate next player in the current direction.
-  const nextIndex = (playerIndex + state.direction + n) % n;
+  const nextIndex = nextActive(state.players, playerIndex, state.direction);
   // The player who plays after the penalty row (skipping the drawn player).
-  const afterIndex = (nextIndex + state.direction + n) % n;
+  const afterIndex = nextActive(state.players, nextIndex, state.direction);
   // For skip cards (star / 8), the turn jumps to the player after the next one.
-  const skipIndex = (playerIndex + 2 * state.direction + n) % n;
+  // The seat after the skipped one is the same seat as after a penalty.
+  const skipIndex = afterIndex;
 
   let deck = next.deck;
   let players = next.players;
@@ -374,15 +481,27 @@ export function playCard(
       `${player.name} played a 2 — ${players[nextIndex].name} draws 2 cards and is skipped.`,
     );
   } else if (cardValue === 5) {
-    // A 5 challenges the next player: they may respond with their own 5 to
-    // escape the draw-3 penalty (passing it along), or draw 3 cards.
+    if (state.fiveResponse) {
+      // This 5 was played to answer a pick 3, and answering it cancels it
+      // outright: the challenge ends here rather than being handed along, and
+      // the next player takes an ordinary turn with no penalty to serve.
+      next.fiveResponse = false;
+      next.currentPlayerIndex = nextIndex;
+      next.holdAll = false;
+      log.push(
+        `${player.name} cancelled the pick 3 with a 5 — ${players[nextIndex].name} plays on.`,
+      );
+      next.log = log;
+      next.jumpCount = 0;
+      return next;
+    }
+    // A fresh 5 challenges the next player: they may answer with their own 5
+    // to cancel it, or draw 3 cards.
     next.fiveResponse = true;
     next.currentPlayerIndex = nextIndex;
     next.holdAll = false;
     log.push(
-      state.fiveResponse
-        ? `${player.name} rejected the pick 3 with a 5 — ${players[nextIndex].name} must draw 3 cards or play a 5 to pass it on!`
-        : `${player.name} played a 5 — ${players[nextIndex].name} must draw 3 cards or play a 5 to pass it on!`,
+      `${player.name} played a 5 — ${players[nextIndex].name} must draw 3 cards or play a 5 to cancel it!`,
     );
     next.log = log;
     next.jumpCount = 0;
@@ -467,8 +586,7 @@ export function drawCard(state: GameState, playerIndex: number): GameState {
   // instead of playing their own 5, they must draw the 3-card penalty and the
   // turn passes to the player after them.
   if (state.fiveResponse) {
-    const n = state.players.length;
-    const afterIndex = (playerIndex + state.direction + n) % n;
+    const afterIndex = nextActive(state.players, playerIndex, state.direction);
     let deck = [...state.deck];
     const discardPile = [...state.discardPile];
     let players = state.players;
@@ -544,17 +662,9 @@ export function drawCard(state: GameState, playerIndex: number): GameState {
 
 function advanceTurn(state: GameState, playerIndex: number): GameState {
   if (state.gameOver || state.roundOver) return state;
-  const n = state.players.length;
-  // Find the next active player after the current one (wrapping around).
-  let nextIndex = (playerIndex + state.direction + n) % n;
-  let guard = 0;
-  while (!state.players[nextIndex].active && guard < n) {
-    nextIndex = (nextIndex + state.direction + n) % n;
-    guard++;
-  }
   return {
     ...state,
-    currentPlayerIndex: nextIndex,
+    currentPlayerIndex: nextActive(state.players, playerIndex, state.direction),
     jumpCount: 0,
     holdAll: false,
   };
@@ -659,11 +769,15 @@ export function nextRound(state: GameState): GameState {
 
   // Start the next round with the remaining players.
   const roundNumber = state.roundNumber + 1;
-  const names = players
-    .filter((p) => p.active)
-    .map((p) => ({ name: p.name, isHuman: p.isHuman }));
+  // The whole table, not just who is left: an eliminated player keeps their
+  // chair so that nobody else has to move into it.
+  const table = players.map((p) => ({
+    name: p.name,
+    isHuman: p.isHuman,
+    active: p.active,
+  }));
 
-  const fresh = dealRound(names, roundNumber, state.mode);
+  const fresh = dealRound(table, roundNumber, state.mode, state.rules);
   return {
     ...fresh,
     log: [
@@ -697,14 +811,18 @@ export function multiPlayLabel(count: number): string {
  */
 export function ruleMessage(
   card: Card,
-  opts?: { rejecting?: boolean; count?: number },
+  opts?: { rejecting?: boolean; count?: number; rules?: Rules },
 ): string | null {
+  // Nothing to announce for a card whose rule is switched off — it played as
+  // an ordinary number.
+  const rules = opts?.rules ?? DEFAULT_RULES;
+  if (!ruleActive(card.value, rules)) return null;
   // A 5 played while facing a 5 challenge cancels the pick-3 and hands it on.
   // Same when the cancellation is done with a double or triple of 5s.
   if (opts?.rejecting && card.value === 5) {
     const count = opts.count ?? 1;
     const label = count > 1 ? `${multiPlayLabel(count)} 5` : "A 5";
-    return `${label} — pick 3 rejected and passed on! 🚫`;
+    return `${label} — pick 3 cancelled! 🚫`;
   }
   if (card.shape === "whot") return "WHOT! Pick a new shape 🔥";
   switch (card.value) {
@@ -723,6 +841,47 @@ export function ruleMessage(
   }
 }
 
+/**
+ * The call for a play, the way it would be shouted across a table — or null
+ * for a plain card, which is called by nothing but the sound of it landing.
+ *
+ * A 5 answering a pending 5 is a rejection rather than a fresh pick-three, and
+ * that reading comes first: a pair of 5s played to escape one is still a
+ * rejection, not a double. Otherwise a group of the same number is called as a
+ * double, and a single card by whatever rule it carries. Whot cards are the
+ * 20s, and asking for a shape is what "I need" is for.
+ */
+export function ruleCall(
+  cards: Card[],
+  opts?: { rejecting?: boolean; continuing?: boolean; rules?: Rules },
+): string | null {
+  const last = cards[cards.length - 1];
+  const rules = opts?.rules ?? DEFAULT_RULES;
+  if (opts?.rejecting && last.value === 5) return "reject";
+  if (cards.length > 1) return "doubleNumber";
+  if (last.shape === "whot") return "iNeed";
+  // A card whose rule is switched off has no call of its own; it may still be
+  // carrying a turn on from a 1, which is picked up at the end.
+  switch (ruleActive(last.value, rules) ? last.value : null) {
+    case 1:
+      return "holdAll";
+    case 2:
+      return "pick2";
+    case 5:
+      return "pick3";
+    case 8:
+      return "suspension";
+    case 14:
+      return "generalMarket";
+  }
+  // Last, so that a card with a call of its own keeps it even when played off
+  // a 1: another 1 is still "hold all", a 2 is still "pick 2", and a pair is
+  // still a double. "Continue" is only for a plain card carrying the turn on,
+  // which is the one case nothing else has anything to say about.
+  if (opts?.continuing) return "continue";
+  return null;
+}
+
 /** The most expensive card of a set to be caught holding at the end. */
 function heaviest(cards: Card[]): Card {
   return cards.reduce((worst, card) =>
@@ -736,7 +895,8 @@ function heaviest(cards: Card[]): Card {
  */
 function deepestShape(playable: Card[], hand: Card[]): Card[] {
   const held = new Map<Shape, number>();
-  for (const card of hand) held.set(card.shape, (held.get(card.shape) ?? 0) + 1);
+  for (const card of hand)
+    held.set(card.shape, (held.get(card.shape) ?? 0) + 1);
 
   let best = playable;
   let bestCount = -1;
@@ -773,10 +933,19 @@ const EASY_MISS_CHANCE = 0.2;
 export function chooseAiCard(
   hand: Card[],
   topCard: Card,
-  currentShape?: Shape,
-  holdAll?: boolean,
-  difficulty: Difficulty = "medium",
+  opts: {
+    currentShape?: Shape;
+    holdAll?: boolean;
+    difficulty?: Difficulty;
+    rules?: Rules;
+  } = {},
 ): Card | null {
+  const {
+    currentShape,
+    holdAll,
+    difficulty = "medium",
+    rules = DEFAULT_RULES,
+  } = opts;
   const shape = currentShape ?? topCard.shape;
 
   // During "Hold All", the AI may play any card.
@@ -785,6 +954,10 @@ export function chooseAiCard(
     : hand.filter((c) => canPlay(c, topCard, shape));
 
   if (playable.length === 0) return null;
+
+  // Down to one card, a bot holding something it cannot finish on has to go to
+  // market like anybody else.
+  if (hand.length === 1 && !canFinishOn(hand[0], rules)) return null;
 
   if (difficulty === "easy") {
     if (Math.random() < EASY_MISS_CHANCE) return null;

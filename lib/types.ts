@@ -8,6 +8,28 @@ export type Shape =
 
 export type GameMode = "1v1" | "elimination";
 
+/**
+ * Which of the game's rules are being played.
+ *
+ * Whot is played a little differently everywhere, so these are switches rather
+ * than assumptions. Turning one off does not remove its card: the card stays
+ * playable and still matches on its number, it just stops carrying the rule.
+ */
+export interface Rules {
+  /** A 2 makes the next player draw 2 and miss their turn. */
+  pick2: boolean;
+  /** A 5 makes the next player draw 3, unless they answer with a 5. */
+  pick3: boolean;
+  /** An 8 skips the next player. */
+  suspension: boolean;
+  /** Any card may be played on a 1, and the player keeps the turn. */
+  holdAll: boolean;
+  /** A 1, 8, 14 or Whot may be the card a round is won on. */
+  endOnSpecial: boolean;
+  /** Cards of the same number may be played together in one turn. */
+  doubles: boolean;
+}
+
 /** How hard the bots play. See chooseAiCard in lib/gameLogic.ts. */
 export type Difficulty = "easy" | "medium" | "hard";
 
@@ -34,6 +56,8 @@ export interface RoundElimination {
 }
 
 export interface GameState {
+  // Which rules this game is being played by, fixed when the cards are dealt.
+  rules: Rules;
   // Changes every time cards are dealt. That is what lets the board tell a
   // fresh hand from an ordinary move — a new round, or the same round number
   // dealt again after a restart — and because it travels with the state, a
@@ -67,7 +91,8 @@ export interface GameState {
   // any card (any number or shape) before the next player's turn.
   holdAll: boolean;
   // When a 5 is played, the next player may respond by playing their own 5 to
-  // escape the draw-3 penalty (passing it along), or by drawing 3 cards.
+  // cancel the draw-3 penalty outright, or by drawing 3 cards. A cancelling 5
+  // ends the challenge rather than handing it on.
   // True while the current player must make that choice.
   fiveResponse: boolean;
   // Played cards (excluding the current topCard). Used to reshuffle the deck

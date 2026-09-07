@@ -8,12 +8,22 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import type { Card, Difficulty, GameMode, Player, Shape } from "@/lib/types";
+import type {
+  Card,
+  Difficulty,
+  GameMode,
+  Player,
+  Rules,
+  Shape,
+} from "@/lib/types";
 import type { GameState, Seat } from "@/lib/gameLogic";
 import {
+  BOT_NAMES,
   HAND_SIZE,
   initGame,
+  canFinishOn,
   canPlay,
+  DEFAULT_RULES,
   playCard,
   playCards,
   drawCard,
@@ -22,6 +32,7 @@ import {
   nextRound,
   handValue,
   ruleMessage,
+  ruleCall,
   multiPlayLabel,
 } from "@/lib/gameLogic";
 import ClassDiscardPile from "./DiscardPile";
@@ -46,9 +57,9 @@ import {
   subscribeSettings,
   updateSettings,
 } from "@/lib/settings";
-import SettingsScreen from "./Settings";
+import SettingsModal from "./Settings";
 import { describeShape } from "@/lib/describe";
-import { playSound, setSoundEnabled } from "@/lib/sound";
+import { playSound, setSoundEnabled, speak } from "@/lib/sound";
 
 type Session =
   | { kind: "local"; numPlayers: number; mode: GameMode; seats: Seat[] }
@@ -61,7 +72,7 @@ function nearbySeats(game: NearbyGame): Seat[] {
     seats[guest.seat] = { name: guest.name, isHuman: true };
   }
   for (let i = 0; i < game.numPlayers; i++) {
-    seats[i] ??= { name: `Player ${i}`, isHuman: false };
+    seats[i] ??= { name: BOT_NAMES[i - 1] ?? `Player ${i}`, isHuman: false };
   }
   return seats.slice(0, game.numPlayers);
 }
@@ -171,16 +182,6 @@ export default function WhotGame() {
     );
   }
 
-  if (showSettings) {
-    return (
-      <SettingsScreen
-        settings={settings}
-        onChange={updateSettings}
-        onBack={() => setShowSettings(false)}
-      />
-    );
-  }
-
   if (!session) {
     if (pairing) {
       return (
@@ -192,16 +193,27 @@ export default function WhotGame() {
         />
       );
     }
-    // Show the setup screen (mode, player count, then names) first.
+    // Show the setup screen (mode, player count, then names) first, with the
+    // settings raised over it rather than in place of it — so the menu it came
+    // from is still there behind it.
     return (
-      <PlayerSetup
-        onStart={(numPlayers, mode, seats) =>
-          setSession({ kind: "local", numPlayers, mode, seats })
-        }
-        onNearby={() => setPairing(true)}
-        onSettings={() => setShowSettings(true)}
-        defaultPlayers={settings.numPlayers}
-      />
+      <>
+        <PlayerSetup
+          onStart={(numPlayers, mode, seats) =>
+            setSession({ kind: "local", numPlayers, mode, seats })
+          }
+          onNearby={() => setPairing(true)}
+          onSettings={() => setShowSettings(true)}
+          defaultPlayers={settings.numPlayers}
+        />
+        {showSettings && (
+          <SettingsModal
+            settings={settings}
+            onChange={updateSettings}
+            onClose={() => setShowSettings(false)}
+          />
+        )}
+      </>
     );
   }
 
@@ -215,6 +227,7 @@ export default function WhotGame() {
         seats={nearbySeats(game)}
         net={net}
         difficulty={settings.difficulty}
+        rules={settings.rules}
         onQuit={leave}
       />
     );
@@ -230,6 +243,7 @@ export default function WhotGame() {
       mode={session.mode}
       seats={session.seats}
       difficulty={settings.difficulty}
+      rules={settings.rules}
       onQuit={leave}
     />
   );
@@ -245,9 +259,11 @@ interface BotAreaProps {
   // "right" = standing sideways, cards face inward (left), name against wall (right).
   side?: "top" | "left" | "right";
   singleRow?: boolean; // if true, don't wrap cards into multiple rows
-  /** True while the round is still being dealt, so arriving cards animate in. */
-  dealing?: boolean;
 }
+
+// How long "check up!" is left to itself before the scoreboard arrives over
+// the top of it.
+const RESULT_DELAY = 2000;
 
 /** Whether a play trips a rule worth holding the bots back a moment for. */
 function isRulePlay(cards: Card[]): boolean {
@@ -276,7 +292,6 @@ function BotArea({
   maxCards,
   side = "top",
   singleRow = false,
-  dealing = false,
 }: BotAreaProps) {
   const isSide = side === "left" || side === "right";
   const visibleCount = Math.min(
@@ -347,7 +362,10 @@ function BotArea({
               key={i}
               size="xl"
               rotate={isSide ? cardRotate : 0}
-              className={dealing ? "deal-in" : ""}
+              // Keyed by position, so the back that appears when this player
+              // gains a card is a fresh element and animates in — whether it
+              // came from the deal or from the market.
+              className="deal-in"
             />
           ))}
         </div>
@@ -389,6 +407,9 @@ interface GameBoardProps {
   // How hard the bots play. Only the host runs them, so in a game across
   // phones it is the host's setting that counts.
   difficulty?: Difficulty;
+  // Which rules to deal the game by. They then travel in the game state, so
+  // the host's choice governs every phone.
+  rules?: Rules;
 }
 
 function GameBoard({
@@ -398,6 +419,7 @@ function GameBoard({
   seats,
   net,
   difficulty = "medium",
+  rules = DEFAULT_RULES,
 }: GameBoardProps) {
   const [game, setGame] = useState<GameState | null>(null);
   // Which place at the table this device plays. The host always has the first;
@@ -455,36 +477,62 @@ function GameBoard({
 
   // `rejecting` is true when these cards are played in answer to a pending 5
   // challenge — a single 5, or a double/triple of 5s, cancels the pick 3.
-  const triggerPopup = useCallback((cards: Card[], rejecting = false) => {
-    const count = cards.length;
-    const last = cards[count - 1];
-    const isRejection = rejecting && last.value === 5;
-    const msg = ruleMessage(last, { rejecting, count });
+  const triggerPopup = useCallback(
+    (
+      cards: Card[],
+      opts: {
+        rejecting?: boolean;
+        continuing?: boolean;
+        // The call has already been made. A Whot is called as the shape is
+        // asked for, which happens before the card is actually played.
+        called?: boolean;
+      } = {},
+    ) => {
+      const { rejecting = false, continuing = false, called = false } = opts;
+      // The rules travel with the game state, so a card whose rule is
+      // switched off has nothing to announce.
+      const rules = gameRef.current?.rules ?? DEFAULT_RULES;
+      const count = cards.length;
+      const last = cards[count - 1];
+      const isRejection = rejecting && last.value === 5;
+      const msg = ruleMessage(last, { rejecting, count, rules });
 
-    // A double/triple (or more) of the same number is worth announcing on its
-    // own, even when the number carries no special rule. The rejection message
-    // already names the double/triple, so it keeps its own headline.
-    if (count > 1 && !isRejection) {
-      const label = multiPlayLabel(count);
-      const number = last.value !== null ? `${last.value}s` : "Whots";
+      // Every play in the game passes through here — mine, a bot's, and a
+      // guest's as the host applies it — so this is the one place the call has
+      // to be made from. It comes before the early return below, because a
+      // double of a plain number is still worth calling even though it carries
+      // no rule message.
+      if (!called) {
+        const call = ruleCall(cards, { rejecting, continuing, rules });
+        if (call) speak(call);
+      }
+
+      // A double/triple (or more) of the same number is worth announcing on its
+      // own, even when the number carries no special rule. The rejection message
+      // already names the double/triple, so it keeps its own headline.
+      if (count > 1 && !isRejection) {
+        const label = multiPlayLabel(count);
+        const number = last.value !== null ? `${last.value}s` : "Whots";
+        setPopup({
+          title: `🃏 ${label}!`,
+          text: `${label} ${number} played together!`,
+          detail: msg ?? undefined,
+        });
+        window.setTimeout(() => setPopup(null), 2200);
+        return;
+      }
+
+      if (!msg) return;
       setPopup({
-        title: `🃏 ${label}!`,
-        text: `${label} ${number} played together!`,
-        detail: msg ?? undefined,
+        title: isRejection ? "🚫 Rejected!" : "⚡ Rule!",
+        text: msg,
       });
       window.setTimeout(() => setPopup(null), 2200);
-      return;
-    }
-
-    if (!msg) return;
-    setPopup({
-      title: isRejection ? "🚫 Rejected!" : "⚡ Rule!",
-      text: msg,
-    });
-    window.setTimeout(() => setPopup(null), 2200);
-    // Nothing in here changes between renders, so the frame handler below can
-    // depend on it without being rebuilt after every move.
-  }, []);
+      // Nothing in here changes between renders, so the frame handler below
+      // can depend on it without being rebuilt after every move.
+    },
+    [],
+  );
 
   // Cards that have not been dealt out on this screen yet — the opening hand,
   // a new round after an elimination, a restart, or the host's first frame
@@ -495,6 +543,9 @@ function GameBoard({
     if (dealtId.current === game.dealId) return;
     dealtId.current = game.dealId;
     setLanded(0);
+    // Announced here rather than where the cards are dealt, so it is heard on
+    // every phone: a guest's cards arrive over the wire, not from initGame.
+    speak("letTheGameBegin");
   }, [game]);
 
   useEffect(() => {
@@ -531,7 +582,10 @@ function GameBoard({
       if (!applied) return;
       commit(applied.state);
       if (applied.cards.length > 0) {
-        triggerPopup(applied.cards, applied.rejecting);
+        triggerPopup(applied.cards, {
+          rejecting: applied.rejecting,
+          continuing: applied.continuing,
+        });
         setRulePause(isRulePlay(applied.cards));
       }
     },
@@ -550,8 +604,7 @@ function GameBoard({
     // shuffling a table of its own, which would be a different table.
     if (isGuest) return;
     const id = requestAnimationFrame(() => {
-      commit(initGame(numPlayers, mode, seats));
-      playSound("start");
+      commit(initGame(numPlayers, mode, seats, rules));
     });
     return () => cancelAnimationFrame(id);
     // seats is fixed for the life of a board — the key changes with the setup.
@@ -575,15 +628,16 @@ function GameBoard({
 
     const delay = rulePause ? 3200 : 2000;
     const timer = setTimeout(() => {
-      // During a "5 challenge", the AI may play a 5 to escape the draw-3
-      // penalty (passing it along). If it has one, play it; otherwise it
-      // draws the 3 penalty cards.
+      // Read before the play, because playing is what clears it.
+      const continuing = game.holdAll;
+      // During a "5 challenge", the AI may play a 5 to cancel the draw-3
+      // penalty. If it has one, play it; otherwise it draws the 3 cards.
       if (game.fiveResponse) {
         const five = player.hand.find((c) => c.value === 5);
         if (five) {
           const next = playCard(game, game.currentPlayerIndex, five);
           commit(next);
-          triggerPopup([five], true);
+          triggerPopup([five], { rejecting: true });
           return;
         }
         const next = drawCard(game, game.currentPlayerIndex);
@@ -591,13 +645,11 @@ function GameBoard({
         return;
       }
 
-      const card = chooseAiCard(
-        player.hand,
-        game.topCard,
-        undefined,
-        game.holdAll,
+      const card = chooseAiCard(player.hand, game.topCard, {
+        holdAll: game.holdAll,
         difficulty,
-      );
+        rules: game.rules,
+      });
       if (card) {
         if (card.shape === "whot") {
           const shapes: Shape[] = [
@@ -610,16 +662,20 @@ function GameBoard({
           const chosen = shapes[Math.floor(Math.random() * shapes.length)];
           const next = playCard(game, game.currentPlayerIndex, card, chosen);
           commit(next);
-          triggerPopup([card]);
+          triggerPopup([card], { continuing });
         } else {
           const next = playCard(game, game.currentPlayerIndex, card);
           commit(next);
-          triggerPopup([card]);
+          triggerPopup([card], { continuing });
         }
       } else {
         const next = drawCard(game, game.currentPlayerIndex);
         commit(next);
         playSound("drawCard");
+        // Going to market: drawing on your own turn rather than following. The
+        // forced pick-2 and pick-3 draws are called by the card that caused
+        // them, so they are not market.
+        speak("market");
       }
     }, delay);
 
@@ -667,21 +723,78 @@ function GameBoard({
     prevTopRef.current = { id: key, value: game.topCard.value };
   }, [game]);
 
-  // Play the "level win" sound when a round ends in elimination mode.
-  const prevRoundOverRef = useRef(false);
+  // A hand being emptied is called before the scoreboard turns up: "check up!"
+  // lands first, and the round result follows a couple of seconds later, so
+  // the call is heard rather than buried under the overlay arriving.
+  //
+  // Held as the deal the pause belongs to rather than a plain boolean, so the
+  // next round's pause is its own and nothing has to be reset on the way out
+  // of this one.
+  const [resultFor, setResultFor] = useState<string | null>(null);
+  const decidedDeal =
+    game && game.roundOver && !game.gameOver ? game.dealId : null;
+
   useEffect(() => {
-    if (!game) return;
+    if (!decidedDeal) return;
+    speak("checkUp");
+    const id = setTimeout(() => {
+      // In 1v1 the round result and the match result are the same thing, so
+      // there is no scoreboard worth stopping at: the winner screen follows
+      // the call directly. Elimination stops at its round page, which is where
+      // hand totals are compared, somebody goes out, and the next round is
+      // dealt from.
+      //
+      // Read through the ref rather than a dependency, so the wait is not
+      // restarted by every state change that happens during it.
+      const current = gameRef.current;
+      if (current?.mode === "1v1") {
+        // The host advances for everyone and publishes the result; a guest
+        // waits to be told.
+        if (!isGuest) commit(nextRound(current));
+        return;
+      }
+      setResultFor(decidedDeal);
+    }, RESULT_DELAY);
+    return () => clearTimeout(id);
+  }, [decidedDeal, isGuest, commit]);
+
+  const showRoundResult = decidedDeal !== null && resultFor === decidedDeal;
+
+  // The elimination jingle goes with the scoreboard rather than with the call,
+  // so the two are not sounding at once.
+  const prevShownRef = useRef(false);
+  useEffect(() => {
     if (
-      game.roundOver &&
-      !prevRoundOverRef.current &&
-      game.mode === "elimination"
+      showRoundResult &&
+      !prevShownRef.current &&
+      game?.mode === "elimination"
     ) {
       playSound("levelWin");
     }
-    prevRoundOverRef.current = game.roundOver;
+    prevShownRef.current = showRoundResult;
+  }, [showRoundResult, game?.mode]);
+
+  // "Last card!" — called the moment anybody is down to one, whoever they
+  // are. It watches the real hands rather than the dealing animation, so the
+  // cards passing through one on their way to five never set it off.
+  const onOneCard = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!game) return;
+    const now = new Set<number>();
+    game.players.forEach((player, index) => {
+      if (player.active && player.hand.length === 1) now.add(index);
+    });
+    let fresh = false;
+    for (const index of now) {
+      if (!onOneCard.current.has(index)) fresh = true;
+    }
+    onOneCard.current = now;
+    if (fresh) speak("lastCard");
   }, [game]);
 
-  // Play win/lose sound when the game ends.
+  // Play win/lose sound when the game ends. "Check up!" has already been
+  // called by then — it goes with the emptied hand, one screen earlier — and
+  // this screen only ever arrives on a tap, so there is nothing to wait for.
   const prevOverRef = useRef(false);
   useEffect(() => {
     if (!game) return;
@@ -744,17 +857,24 @@ function GameBoard({
   const effectiveShape: Shape = g.topCard.shape;
 
   // Compute playable cards for the human player
+  const myHand = g.players[seat].hand;
+  // Down to one card, it has to be one the round can be finished on — a 1, an
+  // 8, a 14 or a Whot cannot win, so holding one means going to market. See
+  // canFinishOn in lib/gameLogic.ts.
+  const stuckOnLastCard =
+    myHand.length === 1 && !canFinishOn(myHand[0], g.rules);
+
   const humanPlayable = new Set<string>();
-  if (isHumanTurn && !pendingShape) {
+  if (isHumanTurn && !pendingShape && !stuckOnLastCard) {
     if (g.fiveResponse) {
-      // Responding to a 5: the only way to escape is to play another 5.
-      g.players[seat].hand.forEach((c) => {
+      // Responding to a 5: the only way out is to play another 5.
+      myHand.forEach((c) => {
         if (c.value === 5) humanPlayable.add(c.id);
       });
     } else if (g.holdAll) {
-      g.players[seat].hand.forEach((c) => humanPlayable.add(c.id));
+      myHand.forEach((c) => humanPlayable.add(c.id));
     } else {
-      g.players[seat].hand.forEach((c) => {
+      myHand.forEach((c) => {
         if (canPlay(c, g.topCard)) humanPlayable.add(c.id);
       });
     }
@@ -770,6 +890,13 @@ function GameBoard({
       .filter((c): c is Card => c !== undefined);
   }
 
+  // A Whot is called as the shape is asked for rather than once it has been
+  // picked: "I need…" belongs in front of the choice, not behind it.
+  function askForShape() {
+    speak("iNeed");
+    setPendingShape(true);
+  }
+
   // Commit the currently selected cards (if any) to the table.
   function commitSelection() {
     const ids = selectedIdsRef.current;
@@ -779,16 +906,20 @@ function GameBoard({
 
     const last = cards[cards.length - 1];
     if (last.shape === "whot") {
-      setPendingShape(true);
+      askForShape();
       return;
     }
 
+    if (cards.length === myHand.length && !canFinishOn(last, g.rules)) return;
+
     const rejecting = g.fiveResponse;
+    // Read before the play, because playing is what clears it.
+    const continuing = g.holdAll;
     setSelectedIds(new Set());
     setSelectedValue(null);
     selectedIdsRef.current = new Set();
     selectedValueRef.current = null;
-    triggerPopup(cards, rejecting);
+    triggerPopup(cards, { rejecting, continuing });
     setRulePause(isRulePlay(cards));
 
     // A guest names the cards and lets the host work out what they do. The
@@ -813,6 +944,7 @@ function GameBoard({
     // A same-numbered card is also allowed once a group of that number is
     // already selected (even if its shape doesn't match the top card).
     const groupingSameValue =
+      g.rules.doubles &&
       selectedValueRef.current !== null &&
       selectedValueRef.current === card.value &&
       selectedIdsRef.current.size > 0;
@@ -828,7 +960,7 @@ function GameBoard({
       setSelectedValue(null);
       selectedIdsRef.current = new Set([card.id]);
       selectedValueRef.current = null;
-      setPendingShape(true);
+      askForShape();
       return;
     }
 
@@ -838,16 +970,28 @@ function GameBoard({
     // If we already have a pending same-value group, add to it.
     const curIds = selectedIdsRef.current;
     const curValue = selectedValueRef.current;
-    if (curValue !== null && curValue === value && !curIds.has(card.id)) {
+    if (
+      g.rules.doubles &&
+      curValue !== null &&
+      curValue === value &&
+      !curIds.has(card.id)
+    ) {
       const nextIds = new Set([...curIds, card.id]);
+      // Completing the group would empty the hand, so it has to end on a card
+      // the round can be finished on. Refusing the click here is what stops a
+      // pair of 8s being played out together to win.
+      if (nextIds.size === myHand.length && !canFinishOn(card, g.rules)) return;
       setSelectedIds(nextIds);
       selectedIdsRef.current = nextIds;
     } else {
       // Starting a new selection (or switching to a different number).
       setSelectedIds(new Set([card.id]));
-      setSelectedValue(value);
+      // Left unset when doubles are off, so the other cards of this number are
+      // not lit up as though they could join in.
+      const grouped = g.rules.doubles ? value : null;
+      setSelectedValue(grouped);
       selectedIdsRef.current = new Set([card.id]);
-      selectedValueRef.current = value;
+      selectedValueRef.current = grouped;
     }
 
     // Reset the auto-commit timer so the player can quickly chain more
@@ -871,10 +1015,10 @@ function GameBoard({
     // escaped with their own 5 and passed the draw-3 penalty over), don't
     // use the normal draw sound — use the penalty draw sound instead.
     playSound("drawCard");
-    // if (g.fiveResponse) {
-    //   playSound("drawPenalty");
-    // } else {
-    // }
+    // Going to market: taking a card on your own turn rather than following
+    // suit. A forced pick-2 or pick-3 is called by the card that caused it, so
+    // it is not market.
+    if (!g.fiveResponse) speak("market");
     if (isGuest) {
       net?.send({ type: "draw" });
       return;
@@ -897,9 +1041,11 @@ function GameBoard({
     if (selectedIds.size === 0) return;
     const cards = selectedCardsInOrder(selectedIds);
     if (cards.length === 0) return;
+    const continuing = g.holdAll;
     setSelectedIds(new Set());
     setPendingShape(false);
-    triggerPopup(cards);
+    // Already called when the picker opened.
+    triggerPopup(cards, { continuing, called: true });
     setRulePause(isRulePlay(cards));
     if (isGuest) {
       net?.send({ type: "play", cardIds: cards.map((c) => c.id), shape });
@@ -925,7 +1071,7 @@ function GameBoard({
     // Only the host reshuffles, because it deals for the whole table. A
     // guest's Restart button is hidden rather than left to do nothing.
     if (isGuest) return;
-    commit(initGame(numPlayers, mode, seats));
+    commit(initGame(numPlayers, mode, seats, rules));
   }
 
   function handlePause() {
@@ -946,23 +1092,28 @@ function GameBoard({
   const winner = g.winnerIndex !== null ? g.players[g.winnerIndex] : null;
   // Players still in the tournament
   const activePlayers = g.players.filter((p) => p.active);
-  // The other players still in, walked round the table in turn order from the
-  // seat after mine — so whoever plays next sits on my right, the one after
-  // them opposite me, and the last on my left. Each gets a distinct position,
-  // so a single remaining opponent is only ever drawn once. Every phone draws
-  // this from its own seat outwards, which is what puts each player at the
-  // bottom of their own screen holding their own cards.
-  const others: { player: Player; index: number }[] = [];
-  for (let step = 1; step < g.players.length; step++) {
-    const index = (seat + step) % g.players.length;
-    if (g.players[index].active) {
-      others.push({ player: g.players[index], index });
-    }
-  }
+  // Where each of the other players sits, counted round the table from my own
+  // chair: one seat along is on my right, two is opposite me, three is on my
+  // left. Every phone draws this from its own seat outwards, which is what
+  // puts each player at the bottom of their own screen holding their own
+  // cards.
+  //
+  // Keyed on that fixed distance rather than on a list of whoever is left, so
+  // an elimination empties one chair and leaves everybody else where they
+  // were — otherwise the players after the eliminated one would all shuffle
+  // up, and somebody who spent the last round on your left would turn up
+  // opposite you.
+  const seatsRound = g.players.length;
+  const seatedAt = (step: number): { player: Player; index: number } | null => {
+    if (step >= seatsRound) return null;
+    const index = (seat + step) % seatsRound;
+    const player = g.players[index];
+    return player?.active ? { player, index } : null;
+  };
   const isElim = g.mode === "elimination";
-  const topBot = isElim ? (others[1] ?? null) : (others[0] ?? null);
-  const rightBot = isElim ? (others[0] ?? null) : null;
-  const leftBot = others[2] ?? null;
+  const rightBot = isElim ? seatedAt(1) : null;
+  const topBot = isElim ? seatedAt(2) : seatedAt(1);
+  const leftBot = isElim ? seatedAt(3) : null;
   // The round winner (safe from elimination)
   const roundWinner =
     g.roundWinnerIndex !== null ? g.players[g.roundWinnerIndex] : null;
@@ -971,8 +1122,12 @@ function GameBoard({
   let humanHint =
     "Your turn — play a matching card or draw. Click same-numbered cards together!";
   if (g.fiveResponse) {
+    // The pick 3 comes first: it has to be answered whatever else is true of
+    // the hand.
     humanHint =
-      "Play a 5 to pass on the draw-3 penalty — or draw 3 cards. Your choice!";
+      "Play a 5 to cancel the draw-3 penalty — or draw 3 cards. Your choice!";
+  } else if (stuckOnLastCard) {
+    humanHint = "You can't win on that card — go to market and draw.";
   } else if (g.holdAll) {
     humanHint = "Hold All! You may play any card. Click 'End Turn' when done.";
   } else if (selectedValue !== null && selectedIds.size > 0) {
@@ -1048,7 +1203,6 @@ function GameBoard({
             <BotArea
               name={topBot.player.name}
               count={dealtTo(topBot.index)}
-              dealing={dealing}
               isTurn={
                 g.currentPlayerIndex === topBot.index &&
                 !g.gameOver &&
@@ -1071,7 +1225,6 @@ function GameBoard({
               <BotArea
                 name={leftBot.player.name}
                 count={dealtTo(leftBot.index)}
-                dealing={dealing}
                 side="left"
                 isTurn={
                   g.currentPlayerIndex === leftBot.index &&
@@ -1148,7 +1301,6 @@ function GameBoard({
               <BotArea
                 name={rightBot.player.name}
                 count={dealtTo(rightBot.index)}
-                dealing={dealing}
                 side="right"
                 isTurn={
                   g.currentPlayerIndex === rightBot.index &&
@@ -1165,7 +1317,6 @@ function GameBoard({
       <div className="shrink-0">
         <PlayerHand
           cards={g.players[seat].hand.slice(0, dealtTo(seat))}
-          dealing={dealing}
           isActive={isHumanTurn && !pendingShape}
           isHuman
           playableIds={humanPlayable}
@@ -1204,7 +1355,7 @@ function GameBoard({
       )}
 
       {/* Round over overlay */}
-      {g.roundOver && !g.gameOver && (
+      {g.roundOver && !g.gameOver && showRoundResult && g.mode !== "1v1" && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
           <div className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-8 text-center text-zinc-900 shadow-2xl">
             <div className="text-4xl mb-2">🎉</div>
@@ -1214,79 +1365,75 @@ function GameBoard({
                 : `${roundWinner?.name} won the round!`}
             </h2>
             <p className="mt-2 text-sm text-zinc-600">
-              Round {g.roundNumber} is complete.{" "}
-              {g.mode === "1v1"
-                ? "You emptied your hand first — you win the match!"
-                : "The player with the highest hand value is eliminated."}
+              Round {g.roundNumber} is complete. The player with the highest
+              hand value is eliminated.
             </p>
 
             {/* All player hand values */}
-            {g.mode !== "1v1" && (
-              <div className="mt-6 space-y-3">
-                {g.players
-                  .filter((p) => p.active)
-                  .map((p, i) => {
-                    const total = handValue(p.hand);
-                    const isWinner = p.name === roundWinner?.name;
-                    // The eliminated player is the highest hand among the
-                    // active non-winners.
-                    const isEliminated =
-                      !isWinner &&
-                      p.hand.length > 0 &&
-                      total ===
-                        Math.max(
-                          ...g.players
-                            .filter(
-                              (q) =>
-                                q.active &&
-                                q.name !== roundWinner?.name &&
-                                q.hand.length > 0,
-                            )
-                            .map((q) => handValue(q.hand)),
-                        );
-                    return (
-                      <div
-                        key={i}
-                        className={`rounded-xl border p-3 text-left ${
-                          isEliminated
-                            ? "border-red-400 bg-red-50"
-                            : isWinner
-                              ? "border-emerald-400 bg-emerald-50"
-                              : "border-zinc-200 bg-zinc-50"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold">
-                            {p.name}
-                            {isWinner && " 🏆"}
-                            {isEliminated && " ❌"}
-                          </span>
-                          <span className="text-sm font-semibold text-zinc-600">
-                            Hand value: {total}
-                          </span>
-                        </div>
-                        {isWinner && (
-                          <div className="mt-1 text-xs font-semibold text-emerald-600">
-                            Round winner — safe!
-                          </div>
-                        )}
-                        {isEliminated && (
-                          <div className="mt-1 text-xs font-semibold text-red-600">
-                            ⛔ {p.name} is eliminated — highest hand value!
-                          </div>
-                        )}
+            <div className="mt-6 space-y-3">
+              {g.players
+                .filter((p) => p.active)
+                .map((p, i) => {
+                  const total = handValue(p.hand);
+                  const isWinner = p.name === roundWinner?.name;
+                  // The eliminated player is the highest hand among the
+                  // active non-winners.
+                  const isEliminated =
+                    !isWinner &&
+                    p.hand.length > 0 &&
+                    total ===
+                      Math.max(
+                        ...g.players
+                          .filter(
+                            (q) =>
+                              q.active &&
+                              q.name !== roundWinner?.name &&
+                              q.hand.length > 0,
+                          )
+                          .map((q) => handValue(q.hand)),
+                      );
+                  return (
+                    <div
+                      key={i}
+                      className={`rounded-xl border p-3 text-left ${
+                        isEliminated
+                          ? "border-red-400 bg-red-50"
+                          : isWinner
+                            ? "border-emerald-400 bg-emerald-50"
+                            : "border-zinc-200 bg-zinc-50"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold">
+                          {p.name}
+                          {isWinner && " 🏆"}
+                          {isEliminated && " ❌"}
+                        </span>
+                        <span className="text-sm font-semibold text-zinc-600">
+                          Hand value: {total}
+                        </span>
                       </div>
-                    );
-                  })}
-              </div>
-            )}
+                      {isWinner && (
+                        <div className="mt-1 text-xs font-semibold text-emerald-600">
+                          Round winner — safe!
+                        </div>
+                      )}
+                      {isEliminated && (
+                        <div className="mt-1 text-xs font-semibold text-red-600">
+                          ⛔ {p.name} is eliminated — highest hand value!
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
 
             <button
               type="button"
               onClick={handleNextRound}
               className="mt-6 w-full rounded-xl bg-emerald-600 px-6 py-3 font-bold text-white transition hover:bg-emerald-500"
             >
-              {g.mode === "1v1" ? "See Result 🏆" : "Eliminate & Next Round →"}
+              Eliminate &amp; Next Round →
             </button>
           </div>
         </div>
