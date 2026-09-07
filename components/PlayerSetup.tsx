@@ -9,6 +9,9 @@ interface PlayerSetupProps {
   onStart: (numPlayers: number, mode: GameMode, seats: Seat[]) => void;
   /** Hands over to the pairing screen for a game across several phones. */
   onNearby: () => void;
+  onSettings: () => void;
+  /** Seats an elimination game starts on, from Settings. */
+  defaultPlayers: number;
 }
 
 const OPTIONS = [2, 3, 4];
@@ -39,7 +42,12 @@ function storedNames(): string[] {
   }
 }
 
-export default function PlayerSetup({ onStart, onNearby }: PlayerSetupProps) {
+export default function PlayerSetup({
+  onStart,
+  onNearby,
+  onSettings,
+  defaultPlayers,
+}: PlayerSetupProps) {
   const [mode, setMode] = useState<GameMode | null>(null);
   // Set once the mode and player count are settled — the point at which the
   // table is known and there are names to ask for.
@@ -144,7 +152,14 @@ export default function PlayerSetup({ onStart, onNearby }: PlayerSetupProps) {
               </button>
             </div>
 
-            <div className="mt-4 flex justify-center border-t border-white/10 pt-4">
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-3 border-t border-white/10 pt-4">
+              <button
+                type="button"
+                onClick={onSettings}
+                className="rounded-xl border border-white/20 px-4 py-2 text-sm font-semibold transition hover:bg-white/10"
+              >
+                ⚙️ Settings
+              </button>
               <InstallButton />
             </div>
           </div>
@@ -180,13 +195,18 @@ export default function PlayerSetup({ onStart, onNearby }: PlayerSetupProps) {
             You take the first seat. The rest are bots.
           </p>
 
-          <div className="mt-4 p-3 grid grid-cols-3 gap-2">
+          <div className="mt-4 grid grid-cols-3 gap-2 p-3">
             {OPTIONS.map((n) => (
               <button
                 key={n}
                 type="button"
                 onClick={() => askNames(n, "elimination")}
-                className="rounded-xl bg-emerald-600 py-3 text-xl font-black text-white transition hover:scale-105 hover:bg-emerald-500"
+                aria-pressed={n === defaultPlayers}
+                className={`rounded-xl py-3 text-xl font-black transition hover:scale-105 ${
+                  n === defaultPlayers
+                    ? "bg-emerald-600 text-white hover:bg-emerald-500"
+                    : "border border-white/20 text-emerald-200 hover:bg-white/10"
+                }`}
               >
                 {n}
               </button>

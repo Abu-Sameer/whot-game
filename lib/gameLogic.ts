@@ -1,5 +1,5 @@
 import { createDeck, shuffle } from "./deck";
-import type { Card, GameMode, Player, Shape } from "./types";
+import type { Card, Difficulty, GameMode, Player, Shape } from "./types";
 
 export interface GameState {
   // Changes every time cards are dealt. See lib/types.ts.
@@ -723,12 +723,59 @@ export function ruleMessage(
   }
 }
 
-/** AI chooses a card to play. Returns null if none can be played. */
+/** The most expensive card of a set to be caught holding at the end. */
+function heaviest(cards: Card[]): Card {
+  return cards.reduce((worst, card) =>
+    (card.value ?? 0) > (worst.value ?? 0) ? card : worst,
+  );
+}
+
+/**
+ * Of the cards it can play, the ones in whichever shape it holds most of, so
+ * playing one still leaves it something to follow with.
+ */
+function deepestShape(playable: Card[], hand: Card[]): Card[] {
+  const held = new Map<Shape, number>();
+  for (const card of hand) held.set(card.shape, (held.get(card.shape) ?? 0) + 1);
+
+  let best = playable;
+  let bestCount = -1;
+  for (const shape of new Set(playable.map((c) => c.shape))) {
+    const count = held.get(shape) ?? 0;
+    if (count > bestCount) {
+      bestCount = count;
+      best = playable.filter((c) => c.shape === shape);
+    }
+  }
+  return best;
+}
+
+// One turn in five, an easy bot simply fails to spot the play it had.
+const EASY_MISS_CHANCE = 0.2;
+
+/**
+ * AI chooses a card to play. Returns null if none can be played — or, on easy,
+ * if it did not notice the one it had.
+ *
+ * The three levels are three different players rather than one player with a
+ * dial on it:
+ *
+ * - easy plays whatever is legal, at random, and now and then misses its turn
+ *   entirely and picks up instead.
+ * - medium is the steady middle: it holds its Whot back and takes a free skip
+ *   when one is going, but plans no further than that.
+ * - hard plays the rules against you. It reaches first for the cards that cost
+ *   whoever is next something or buy it another turn, and when there is
+ *   nothing like that to play it sheds its heaviest card while staying in the
+ *   shape it holds most of — which is what wins an elimination round, where
+ *   the highest hand left goes out.
+ */
 export function chooseAiCard(
   hand: Card[],
   topCard: Card,
   currentShape?: Shape,
   holdAll?: boolean,
+  difficulty: Difficulty = "medium",
 ): Card | null {
   const shape = currentShape ?? topCard.shape;
 
@@ -739,14 +786,33 @@ export function chooseAiCard(
 
   if (playable.length === 0) return null;
 
-  // Favor playing Whot only if it's the only option, otherwise keep it.
-  const nonWhot = playable.filter((c) => c.shape !== "whot");
-  if (nonWhot.length > 0) {
-    // Prefer 8s to skip opponents
-    const eights = nonWhot.filter((c) => c.value === 8);
-    if (eights.length > 0) return eights[0];
-    return nonWhot[0];
+  if (difficulty === "easy") {
+    if (Math.random() < EASY_MISS_CHANCE) return null;
+    return playable[Math.floor(Math.random() * playable.length)];
   }
 
-  return playable[0];
+  // A Whot is worth 20 against you at the end of a round and will go on
+  // anything, so it is the last card either thinking level lets go of.
+  const nonWhot = playable.filter((c) => c.shape !== "whot");
+  if (nonWhot.length === 0) return playable[0];
+
+  if (difficulty === "hard") {
+    // 14 sends everyone else to the market and hands the turn straight back,
+    // and 1 buys a free go at any card at all: the two best things to play.
+    const tempo = nonWhot.filter((c) => c.value === 14 || c.value === 1);
+    if (tempo.length > 0) return heaviest(tempo);
+    // Then whatever makes the next player pick up and lose their turn.
+    const attack = nonWhot.filter((c) => c.value === 2 || c.value === 5);
+    if (attack.length > 0) return heaviest(attack);
+    // Then a plain skip.
+    const skip = nonWhot.filter((c) => c.value === 8);
+    if (skip.length > 0) return skip[0];
+    // Nothing special to play, so lose weight without losing the shape.
+    return heaviest(deepestShape(nonWhot, hand));
+  }
+
+  // Prefer 8s to skip opponents
+  const eights = nonWhot.filter((c) => c.value === 8);
+  if (eights.length > 0) return eights[0];
+  return nonWhot[0];
 }

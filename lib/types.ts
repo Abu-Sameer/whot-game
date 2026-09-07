@@ -8,6 +8,9 @@ export type Shape =
 
 export type GameMode = "1v1" | "elimination";
 
+/** How hard the bots play. See chooseAiCard in lib/gameLogic.ts. */
+export type Difficulty = "easy" | "medium" | "hard";
+
 export interface Card {
   id: string;
   shape: Shape;

@@ -17,6 +17,25 @@ const SOUNDS: Record<string, string> = {
 let audioContext: AudioContext | null = null;
 const cached: Record<string, HTMLAudioElement> = {};
 
+// Whether the game makes any noise. Held here rather than passed down to every
+// caller: sounds are fired from a dozen places and none of them should have to
+// know or care about the setting. The settings screen owns it and pushes it in.
+let soundOn = true;
+
+/** Switches every sound in the game on or off. */
+export function setSoundEnabled(on: boolean): void {
+  soundOn = on;
+  if (!on) {
+    // Anything already looping has to be stopped now rather than left running
+    // until it happens to be asked to stop.
+    for (const key of Object.keys(cached)) stopSoundLoop(key);
+  }
+}
+
+export function isSoundEnabled(): boolean {
+  return soundOn;
+}
+
 function getContext(): AudioContext | null {
   if (typeof window === "undefined") return null;
   if (!audioContext) {
@@ -43,6 +62,7 @@ export function unlockAudio() {
  */
 export function playSound(key: keyof typeof SOUNDS | string): void {
   if (typeof window === "undefined") return;
+  if (!soundOn) return;
   const src = SOUNDS[key];
   if (!src) return;
   const audio = new Audio(src);
@@ -55,6 +75,7 @@ export function playSound(key: keyof typeof SOUNDS | string): void {
 /** Play a sound, reusing a cached element (good for ambient/looping). */
 export function playSoundLoop(key: keyof typeof SOUNDS | string): void {
   if (typeof window === "undefined") return;
+  if (!soundOn) return;
   const src = SOUNDS[key];
   if (!src) return;
   if (!cached[key]) {

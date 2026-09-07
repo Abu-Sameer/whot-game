@@ -1,7 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Card, GameMode, Player, Shape } from "@/lib/types";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import type { Card, Difficulty, GameMode, Player, Shape } from "@/lib/types";
 import type { GameState, Seat } from "@/lib/gameLogic";
 import {
   HAND_SIZE,
@@ -32,8 +39,16 @@ import {
   parseMessage,
   redactFor,
 } from "@/lib/netProtocol";
+import type { Settings } from "@/lib/settings";
+import {
+  getDefaultSettings,
+  getSettings,
+  subscribeSettings,
+  updateSettings,
+} from "@/lib/settings";
+import SettingsScreen from "./Settings";
 import { describeShape } from "@/lib/describe";
-import { playSound } from "@/lib/sound";
+import { playSound, setSoundEnabled } from "@/lib/sound";
 
 type Session =
   | { kind: "local"; numPlayers: number; mode: GameMode; seats: Seat[] }
@@ -53,6 +68,24 @@ function nearbySeats(game: NearbyGame): Seat[] {
 
 export default function WhotGame() {
   const [pairing, setPairing] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+
+  // Read from the store rather than copied into state: the server has no
+  // storage to read, so it renders the defaults and the browser swaps in what
+  // was saved — which is the one thing that keeps the two renders from
+  // disagreeing. See lib/settings.ts.
+  const settings: Settings = useSyncExternalStore(
+    subscribeSettings,
+    getSettings,
+    getDefaultSettings,
+  );
+
+  // The sound module holds this itself, so nothing that plays a sound has to
+  // know the setting exists.
+  useEffect(() => {
+    setSoundEnabled(settings.sound);
+  }, [settings.sound]);
+
   const [session, setSession] = useState<Session | null>(null);
   const [lost, setLost] = useState(false);
 
@@ -138,6 +171,16 @@ export default function WhotGame() {
     );
   }
 
+  if (showSettings) {
+    return (
+      <SettingsScreen
+        settings={settings}
+        onChange={updateSettings}
+        onBack={() => setShowSettings(false)}
+      />
+    );
+  }
+
   if (!session) {
     if (pairing) {
       return (
@@ -156,6 +199,8 @@ export default function WhotGame() {
           setSession({ kind: "local", numPlayers, mode, seats })
         }
         onNearby={() => setPairing(true)}
+        onSettings={() => setShowSettings(true)}
+        defaultPlayers={settings.numPlayers}
       />
     );
   }
@@ -169,6 +214,7 @@ export default function WhotGame() {
         mode={game.mode}
         seats={nearbySeats(game)}
         net={net}
+        difficulty={settings.difficulty}
         onQuit={leave}
       />
     );
@@ -183,6 +229,7 @@ export default function WhotGame() {
       numPlayers={session.numPlayers}
       mode={session.mode}
       seats={session.seats}
+      difficulty={settings.difficulty}
       onQuit={leave}
     />
   );
@@ -339,9 +386,19 @@ interface GameBoardProps {
   // Present when other phones are in the game. See lib/netProtocol.ts: the
   // host holds the only real state and a guest asks it for everything.
   net?: NetPlay;
+  // How hard the bots play. Only the host runs them, so in a game across
+  // phones it is the host's setting that counts.
+  difficulty?: Difficulty;
 }
 
-function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
+function GameBoard({
+  numPlayers,
+  mode,
+  onQuit,
+  seats,
+  net,
+  difficulty = "medium",
+}: GameBoardProps) {
   const [game, setGame] = useState<GameState | null>(null);
   // Which place at the table this device plays. The host always has the first;
   // a guest is told which is theirs by the host, with every frame, so it never
@@ -539,6 +596,7 @@ function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
         game.topCard,
         undefined,
         game.holdAll,
+        difficulty,
       );
       if (card) {
         if (card.shape === "whot") {
@@ -573,6 +631,7 @@ function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
     isPaused,
     isGuest,
     landed,
+    difficulty,
     commit,
     triggerPopup,
   ]);
