@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import type { Card as CardType, Shape } from "@/lib/types";
 import CircleCard from "./CircleCard";
 import CrossCard from "./CrossCard";
@@ -32,6 +33,9 @@ interface CardProps {
   faceDown?: boolean;
   size?: "sm" | "md" | "lg";
   className?: string;
+  // Lets the caller place the card — the human's hand fans its cards with a
+  // computed margin so a big hand stays on one row.
+  style?: CSSProperties;
 }
 
 const SIZE_STYLES = {
@@ -48,11 +52,13 @@ export default function CardView({
   faceDown = false,
   size = "md",
   className = "",
+  style,
 }: CardProps) {
   if (faceDown) {
     return (
       <div
         className={`${SIZE_STYLES[size]} rounded-xl border-2 border-zinc-700 bg-linear-to-br from-zinc-600 to-zinc-800 shadow-md ${className}`}
+        style={style}
       />
     );
   }
@@ -86,6 +92,7 @@ export default function CardView({
       type="button"
       onClick={onClick}
       disabled={!onClick}
+      style={style}
       className={`${SIZE_STYLES[size]} relative flex flex-col items-center justify-center overflow-hidden rounded-xl border-2 shadow-md transition-transform font-bold ${
         selected
           ? "border-indigo-500 -translate-y-2 ring-2 ring-indigo-400"

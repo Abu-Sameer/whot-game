@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import OrientationFrame from "@/components/OrientationFrame";
 import ServiceWorkerRegistrar from "@/components/ServiceWorkerRegistrar";
 
 const geistSans = Geist({
@@ -54,9 +55,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="app-frame min-h-full flex flex-col">
-        {children}
-        <ServiceWorkerRegistrar />
+      <body>
+        {/* Sizes and, on a portrait phone, rotates the frame that every screen
+        below is drawn inside. */}
+        <OrientationFrame>
+          {children}
+          <ServiceWorkerRegistrar />
+        </OrientationFrame>
       </body>
     </html>
   );

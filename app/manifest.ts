@@ -17,7 +17,9 @@ export default function manifest(): MetadataRoute.Manifest {
     // chrome, on phones and on desktop alike.
     display: "standalone",
     display_override: ["window-controls-overlay", "standalone"],
-    orientation: "any",
+    // The table is a landscape layout, so an installed app should launch
+    // that way round and stay there.
+    orientation: "landscape",
     background_color: "#064e3b",
     theme_color: "#064e3b",
     categories: ["games", "entertainment"],

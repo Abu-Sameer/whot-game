@@ -27,25 +27,35 @@ body {
   margin: 0;
   color: var(--foreground);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
-}
-
-/*
- * Installed-app frame. Keeps the UI clear of the notch and the home
- * indicator, and removes the browser affordances that give a PWA away as a
- * web page: blue tap flashes, long-press callouts, and text selection while
- * dragging cards around.
- */
-.app-frame {
-  padding-top: env(safe-area-inset-top);
-  padding-bottom: env(safe-area-inset-bottom);
-  padding-left: env(safe-area-inset-left);
-  padding-right: env(safe-area-inset-right);
+  /* Every screen is sized to fit the frame, so the page itself never scrolls;
+     the few panels that can outgrow it (the setup screen, the round-over
+     table) scroll on their own. */
+  overflow: hidden;
+  /* Removes the browser affordances that give a PWA away as a web page: blue
+     tap flashes, long-press callouts, and text selection while dragging cards
+     around. */
   -webkit-tap-highlight-color: transparent;
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
-  /* dvh tracks the collapsing mobile browser bars; svh is the safe floor. */
-  min-height: 100svh;
+}
+
+/*
+ * The frame every screen is drawn inside: exactly the visible viewport, with
+ * the notch and the home indicator padded out. dvh/dvw track the collapsing
+ * mobile browser bars.
+ */
+.app-frame {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100dvw;
+  height: 100dvh;
+  overflow: hidden;
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
 }
 
 /*
@@ -53,13 +63,43 @@ body {
  * table — cards, gaps and labels together — to fit any screen without a second
  * layout.
  *
- * The middle row (side bot + pile + deck + side bot) is 36rem wide and the
- * table is roughly 30rem tall, so the limit is whichever axis is tighter:
- * width on a portrait phone, height on a landscape one. min() picks it, and
- * clamp() stops it going below legibility or above the desktop default.
+ * The table needs roughly 32rem across (two side players, the pile and the
+ * deck) and 37rem down (three rows of cards plus the header), so the limit is
+ * whichever axis is tighter. min() picks it, and clamp() stops it going below
+ * legibility or above the desktop default.
  */
 html {
-  font-size: clamp(8.5px, min(2.6vw, 3vh), 16px);
+  font-size: clamp(9px, min(2.9vw, 2.6vh), 16px);
+}
+
+/*
+ * A phone held in portrait. The table only works in landscape, so
+ * OrientationFrame first asks the browser to turn the screen for real; that is
+ * only granted to an installed app or a fullscreen page, and never on iOS.
+ * When it is refused we turn the frame a quarter turn ourselves, so the
+ * picture is already the right way round by the time the player tilts the
+ * phone.
+ */
+@media (orientation: portrait) and (max-width: 820px) {
+  .app-frame {
+    /* Swapped: the frame's width now runs down the device. */
+    width: 100dvh;
+    height: 100dvw;
+    transform-origin: top left;
+    transform: translateX(100dvw) rotate(90deg);
+    /* A quarter turn clockwise puts the frame's top edge along the device's
+       right edge, so every inset moves round one place with it. */
+    padding-top: env(safe-area-inset-right);
+    padding-right: env(safe-area-inset-bottom);
+    padding-bottom: env(safe-area-inset-left);
+    padding-left: env(safe-area-inset-top);
+  }
+
+  /* The board's two axes swapped over with the frame, so the fit calculation
+     has to swap with them. */
+  html {
+    font-size: clamp(9px, min(2.9vh, 2.6vw), 16px);
+  }
 }
 
 /* Rule popup animation: pops up in the middle and fades out */

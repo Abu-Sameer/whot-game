@@ -63,6 +63,9 @@ interface BotAreaProps {
 }
 
 const MAX_VISIBLE = 8;
+// A side player stands in a narrow strip beside the table, so they show a
+// single column of cards however many they are holding.
+const SIDE_VISIBLE = 5;
 const CARDS_PER_ROW = 5;
 // How long to wait after the last selection before auto-playing the
 // selected card(s). Lets the player chain multiple same-numbered cards.
@@ -76,7 +79,11 @@ function BotArea({
   side = "top",
   singleRow = false,
 }: BotAreaProps) {
-  const visibleCount = Math.min(count, maxCards ?? MAX_VISIBLE);
+  const isSide = side === "left" || side === "right";
+  const visibleCount = Math.min(
+    count,
+    maxCards ?? (isSide ? SIDE_VISIBLE : MAX_VISIBLE),
+  );
   const rows: number[][] = [];
   const arr = Array.from({ length: visibleCount }, (_, i) => i);
   const rowSize = singleRow ? visibleCount : CARDS_PER_ROW;
@@ -84,34 +91,32 @@ function BotArea({
     rows.push(arr.slice(i, i + rowSize));
   }
 
-  const isSide = side === "left" || side === "right";
-
   // Side bots stand sideways: their cards are rotated to face the center
   // (90° inward), and their name label sits against the outer wall.
   const cardRotate = side === "left" ? 90 : -90;
 
-  // Name pill: for side bots it's rotated with the card so the name reads
-  // from the wall toward the center.
-  const namePillClass = isSide
-    ? side === "left"
-      ? "inline-flex rotate-90"
-      : "inline-flex -rotate-90"
-    : "flex";
-
   // Name pill: for the left bot it sits on the left against the wall; for the
   // right bot (A) it sits on the right against the wall. The card area is
   // placed on the opposite side so the cards face inward.
+  //
+  // A side bot's name reads down the wall rather than across it. writing-mode
+  // turns the text without a transform, and that is what keeps the pill's box
+  // the shape it looks — a narrow column — so it costs the table only the
+  // width it really occupies. A rotated pill still reserves its full
+  // horizontal width, which is what used to push the side players off screen.
   const namePill = (
     <div
-      className={`${namePillClass} items-center gap-1 rounded-lg border px-2 py-1 ${
+      className={`flex items-center gap-1 rounded-lg border ${
+        isSide ? "[writing-mode:vertical-rl] px-1 py-2" : "px-2 py-1"
+      } ${
         isTurn
           ? "border-amber-400 bg-emerald-700/60"
           : "border-white/10 bg-white/5"
       }`}
     >
-      <span className="text-sm w-16 font-semibold">{name}</span>
-      {isTurn && <span className="ml-0.5 text-amber-300">●</span>}
-      <span className="ml-1 text-xs text-emerald-200">({count})</span>
+      <span className="text-sm font-semibold whitespace-nowrap">{name}</span>
+      {isTurn && <span className="text-amber-300">●</span>}
+      <span className="text-xs text-emerald-200">({count})</span>
     </div>
   );
 
@@ -120,14 +125,22 @@ function BotArea({
   // bot cards wrap in rows. Side bots (A & C) get a wider column gap.
   const cardArea = (
     <div
-      className={`flex items-center space-x-7 space-y-1 ${isSide ? "flex-row" : "flex-col"} 
-      `}
+      className={`flex items-center ${
+        isSide ? "flex-row space-x-7" : "flex-col space-y-1"
+      }`}
     >
       {rows.map((row, r) => (
         <div
           key={r}
-          className={`flex flex-wrap justify-center space-x-0 -space-y-6 ${
-            isSide ? "flex-col" : "flex-row"
+          className={`flex justify-center space-x-0 ${
+            // A side player's column has to fit inside the height of the table
+            // beside the pile, so their cards sit further over each other than
+            // the top player's — that row has the width to spread out in.
+            // flex-nowrap because the column is stretched to the row's height:
+            // allowed to wrap, it would spill into a second column.
+            isSide
+              ? "flex-col flex-nowrap -space-y-10"
+              : "flex-row flex-wrap -space-y-6"
           }`}
         >
           {row.map((_, i) => (
@@ -144,7 +157,9 @@ function BotArea({
 
   return (
     <div
-      className={`flex items-center gap-3 ${isSide ? "flex-row" : "flex-col"}`}
+      className={`flex shrink-0 items-center gap-2 ${
+        isSide ? "flex-row" : "flex-col"
+      }`}
     >
       {showNameFirst && namePill}
       {/* {isTurn && (
@@ -344,7 +359,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
   // All hooks above. Now guard for null game before rendering handlers.
   if (!game) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-linear-to-br from-emerald-900 via-emerald-800 to-teal-900 text-white">
+      <div className="flex h-full items-center justify-center bg-linear-to-br from-emerald-900 via-emerald-800 to-teal-900 text-white">
         <div className="animate-pulse text-xl font-semibold">
           Shuffling the deck...
         </div>
@@ -579,17 +594,17 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
 
   return (
     <div
-      className="flex min-h-screen flex-col bg-cover bg-center p-4 text-white"
+      className="flex h-full min-h-0 flex-col overflow-hidden bg-cover bg-center p-3 text-white"
       style={{ backgroundImage: "url('/gamebackground.jpg')" }}
     >
       {/* Header */}
-      <header className="mb-4 flex items-center justify-between">
-        <h1 className="flex items-center gap-2 text-2xl font-black tracking-tight">
+      <header className="mb-2 flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <h1 className="flex items-center gap-2 text-xl font-black tracking-tight">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/replacevercelicon.jpg"
             alt="Whot"
-            className="h-9 w-9 rounded-lg object-cover shadow ring-1 ring-white/20"
+            className="h-7 w-7 rounded-lg object-cover shadow ring-1 ring-white/20"
           />
           WHOT
         </h1>
@@ -632,9 +647,9 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
 
       {/* Positioned game table: human (bottom). In 1v1 the single bot is at
       top. In elimination: bot2 (top), bot1 (right), bot3 (left). */}
-      <div className="relative flex flex-1 flex-col">
+      <div className="relative flex min-h-0 flex-1 flex-col">
         {/* Top player */}
-        <div className="flex justify-center">
+        <div className="flex shrink-0 justify-center">
           {topBot && (
             <BotArea
               name={topBot.name}
@@ -650,9 +665,13 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
         </div>
 
         {/* Middle row: left bot | center pile+deck | right bot */}
-        <div className="flex flex-1 items-center justify-between gap-4 px-2">
+        {/* The side slots take the width left over either side of the pile, so
+        the two side players sit out against the walls of the table however
+        wide the screen is — rather than at a fixed offset that ran off the
+        edge of a phone. */}
+        <div className="flex min-h-0 flex-1 items-center justify-between gap-2">
           {/* Left bot (hidden in 1v1). Stands sideways, facing inward. */}
-          <div className="w-40 shrink-0">
+          <div className="flex flex-1 items-center justify-start">
             {g.mode !== "1v1" && leftBot && (
               <BotArea
                 name={leftBot.name}
@@ -668,15 +687,15 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
           </div>
 
           {/* Center: discard pile + deck + status */}
-          <div className="flex flex-1 flex-col items-center justify-center gap-3">
-            <div className="flex items-start justify-center gap-8">
+          <div className="flex shrink-0 flex-col items-center justify-center gap-2">
+            <div className="flex items-center justify-center gap-4">
               {g.topCard && <ClassDiscardPile topCard={g.topCard} />}
               <button
                 type="button"
                 onClick={handleDraw}
                 disabled={!isHumanTurn || pendingShape}
                 title={isHumanTurn ? "Click to draw a card" : ""}
-                className="relative h-36 w-24 rounded-xl transition hover:scale-105 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
+                className="relative h-40 w-28 rounded-xl transition hover:scale-105 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <DeckCard count={g.deck.length} />
               </button>
@@ -703,7 +722,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
 
           {/* Right bot (hidden in 1v1, where the only bot goes to the top).
           Stands sideways, facing inward. */}
-          <div className="w-40 mr-12 shrink-0">
+          <div className="flex flex-1 items-center justify-end">
             {g.mode !== "1v1" && rightBot && (
               <BotArea
                 name={rightBot.name}
@@ -721,7 +740,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
       </div>
 
       {/* Human hand */}
-      <div className="p-3">
+      <div className="shrink-0">
         <PlayerHand
           cards={g.players[0].hand}
           isActive={isHumanTurn && !pendingShape}
@@ -764,7 +783,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
       {/* Round over overlay */}
       {g.roundOver && !g.gameOver && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
-          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-8 text-center text-zinc-900 shadow-2xl">
+          <div className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-8 text-center text-zinc-900 shadow-2xl">
             <div className="text-4xl mb-2">🎉</div>
             <h2 className="text-2xl font-black">
               {roundWinner?.isHuman
@@ -858,7 +877,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
         !g.players[0].active && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
             <div
-              className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white
+              className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl bg-white
               p-8 text-center text-zinc-900 shadow-2xl"
             >
               <div className="text-6xl mb-2">💀</div>
@@ -923,7 +942,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
         winner &&
         !(g.mode === "elimination" && !g.players[0].active) && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
-            <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-8 text-center text-zinc-900 shadow-2xl">
+            <div className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-8 text-center text-zinc-900 shadow-2xl">
               <div className="text-6xl mb-2">🏆</div>
               <h2 className="text-3xl font-black">
                 {winner.isHuman
