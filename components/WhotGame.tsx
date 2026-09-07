@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import type { Card, GameMode, Shape } from "@/lib/types";
-import type { GameState } from "@/lib/gameLogic";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Card, GameMode, Player, Shape } from "@/lib/types";
+import type { GameState, Seat } from "@/lib/gameLogic";
 import {
   initGame,
   canPlay,
@@ -22,30 +22,167 @@ import FaceDownCard from "./FaceDownCard";
 import PlayerHand from "./PlayerHand";
 import PlayerSetup from "./PlayerSetup";
 import ShapePicker from "./ShapePicker";
+import type { NearbyGame } from "./NearbyPairing";
+import NearbyPairing from "./NearbyPairing";
+import type { NetMessage, NetPlay } from "@/lib/netProtocol";
+import {
+  applyGuestMove,
+  HOST_SEAT,
+  parseMessage,
+  redactFor,
+} from "@/lib/netProtocol";
 import { describeShape } from "@/lib/describe";
 import { playSound } from "@/lib/sound";
 
-export default function WhotGame() {
-  const [config, setConfig] = useState<{
-    numPlayers: number;
-    mode: GameMode;
-  } | null>(null);
+type Session =
+  | { kind: "local"; numPlayers: number; mode: GameMode; seats: Seat[] }
+  | { kind: "nearby"; game: NearbyGame };
 
-  // Show the setup screen (mode + player count) first.
-  if (config === null) {
+/** The table a nearby game is dealt onto: the people first, then bots. */
+function nearbySeats(game: NearbyGame): Seat[] {
+  const seats: Seat[] = [{ name: game.myName, isHuman: true }];
+  for (const guest of game.guests) {
+    seats[guest.seat] = { name: guest.name, isHuman: true };
+  }
+  for (let i = 0; i < game.numPlayers; i++) {
+    seats[i] ??= { name: `Player ${i}`, isHuman: false };
+  }
+  return seats.slice(0, game.numPlayers);
+}
+
+export default function WhotGame() {
+  const [pairing, setPairing] = useState(false);
+  const [session, setSession] = useState<Session | null>(null);
+  const [lost, setLost] = useState(false);
+
+  // Frames can arrive before the board has mounted and subscribed — the
+  // host's opening deal races the guest's board into existence. They queue
+  // here until something is listening, so the deal is never the one dropped.
+  const listeners = useRef(new Set<(m: NetMessage, from: number) => void>());
+  const backlog = useRef<{ message: NetMessage; from: number }[]>([]);
+
+  const deliver = useCallback((raw: unknown, from: number) => {
+    const message = parseMessage(raw);
+    if (!message) return;
+    if (listeners.current.size === 0) {
+      backlog.current.push({ message, from });
+      return;
+    }
+    for (const listener of listeners.current) listener(message, from);
+  }, []);
+
+  const subscribe = useCallback(
+    (handler: (message: NetMessage, from: number) => void) => {
+      listeners.current.add(handler);
+      const queued = backlog.current;
+      backlog.current = [];
+      for (const item of queued) handler(item.message, item.from);
+      return () => {
+        listeners.current.delete(handler);
+      };
+    },
+    [],
+  );
+
+  const nearby = session?.kind === "nearby" ? session.game : null;
+  // Memoised because the board subscribes on identity: a fresh object every
+  // render would tear the subscription down and rebuild it after every move.
+  const net = useMemo<NetPlay | undefined>(() => {
+    if (!nearby) return undefined;
+    return {
+      role: nearby.role,
+      send: (message) => nearby.host?.send(message),
+      publish: (state) => {
+        // Each guest is sent the table with only their own cards in it, so no
+        // frame ever carries a hand its recipient is not entitled to see.
+        for (const guest of nearby.guests) {
+          guest.connection.send({
+            type: "state",
+            state: redactFor(state, guest.seat),
+            seat: guest.seat,
+          });
+        }
+      },
+      subscribe,
+    };
+  }, [nearby, subscribe]);
+
+  const leave = useCallback(() => {
+    nearby?.host?.close();
+    nearby?.guests.forEach((guest) => guest.connection.close());
+    listeners.current.clear();
+    backlog.current = [];
+    setSession(null);
+    setPairing(false);
+    setLost(false);
+  }, [nearby]);
+
+  if (lost) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center bg-emerald-950 p-6 text-center text-white">
+        <div className="mb-3 text-5xl">📴</div>
+        <h2 className="text-2xl font-black">Lost a player</h2>
+        <p className="mt-2 max-w-sm text-sm text-emerald-200">
+          A connection dropped — a phone going to sleep or leaving the Wi-Fi
+          will do it. The game cannot carry on without everyone.
+        </p>
+        <button
+          type="button"
+          onClick={leave}
+          className="mt-6 rounded-xl bg-emerald-600 px-6 py-3 font-bold transition hover:bg-emerald-500"
+        >
+          Back to the menu
+        </button>
+      </div>
+    );
+  }
+
+  if (!session) {
+    if (pairing) {
+      return (
+        <NearbyPairing
+          onBack={() => setPairing(false)}
+          onMessage={deliver}
+          onLost={() => setLost(true)}
+          onReady={(game) => setSession({ kind: "nearby", game })}
+        />
+      );
+    }
+    // Show the setup screen (mode, player count, then names) first.
     return (
       <PlayerSetup
-        onStart={(numPlayers, mode) => setConfig({ numPlayers, mode })}
+        onStart={(numPlayers, mode, seats) =>
+          setSession({ kind: "local", numPlayers, mode, seats })
+        }
+        onNearby={() => setPairing(true)}
+      />
+    );
+  }
+
+  if (session.kind === "nearby") {
+    const game = session.game;
+    return (
+      <GameBoard
+        key={`nearby-${game.role}`}
+        numPlayers={game.numPlayers}
+        mode={game.mode}
+        seats={nearbySeats(game)}
+        net={net}
+        onQuit={leave}
       />
     );
   }
 
   return (
     <GameBoard
-      key={`${config.mode}-${config.numPlayers}`}
-      numPlayers={config.numPlayers}
-      mode={config.mode}
-      onQuit={() => setConfig(null)}
+      // Renaming the table is a new game, so the key deals a fresh round.
+      key={`${session.mode}-${session.numPlayers}-${session.seats
+        .map((seat) => seat.name)
+        .join("|")}`}
+      numPlayers={session.numPlayers}
+      mode={session.mode}
+      seats={session.seats}
+      onQuit={leave}
     />
   );
 }
@@ -62,7 +199,15 @@ interface BotAreaProps {
   singleRow?: boolean; // if true, don't wrap cards into multiple rows
 }
 
-const MAX_VISIBLE = 8;
+/** Whether a play trips a rule worth holding the bots back a moment for. */
+function isRulePlay(cards: Card[]): boolean {
+  if (cards.length > 1) return true;
+  const card = cards[0];
+  if (card.shape === "whot") return true;
+  return card.value === 1 || card.value === 14;
+}
+
+const MAX_VISIBLE = 10;
 // A side player stands in a narrow strip beside the table, so they show a
 // single column of cards however many they are holding.
 const SIDE_VISIBLE = 5;
@@ -107,7 +252,7 @@ function BotArea({
   const namePill = (
     <div
       className={`flex items-center gap-1 rounded-lg border ${
-        isSide ? "[writing-mode:vertical-rl] px-1 py-2" : "px-2 py-1"
+        isSide ? "[writing-mode:vertical-rl] px-1 py-1" : "px-2 py-1"
       } ${
         isTurn
           ? "border-amber-400 bg-emerald-700/60"
@@ -139,7 +284,7 @@ function BotArea({
             // flex-nowrap because the column is stretched to the row's height:
             // allowed to wrap, it would spill into a second column.
             isSide
-              ? "flex-col flex-nowrap -space-y-10"
+              ? "flex-col -space-y-5 flex-nowrap"
               : "flex-row flex-wrap -space-y-6"
           }`}
         >
@@ -157,7 +302,7 @@ function BotArea({
 
   return (
     <div
-      className={`flex shrink-0 items-center gap-2 ${
+      className={`flex shrink-0 items-center gap-5 ${
         isSide ? "flex-row" : "flex-col"
       }`}
     >
@@ -177,10 +322,20 @@ interface GameBoardProps {
   numPlayers: number;
   mode: GameMode;
   onQuit: () => void;
+  // Names and player types for each place, in turn order.
+  seats?: Seat[];
+  // Present when other phones are in the game. See lib/netProtocol.ts: the
+  // host holds the only real state and a guest asks it for everything.
+  net?: NetPlay;
 }
 
-function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
+function GameBoard({ numPlayers, mode, onQuit, seats, net }: GameBoardProps) {
   const [game, setGame] = useState<GameState | null>(null);
+  // Which place at the table this device plays. The host always has the first;
+  // a guest is told which is theirs by the host, with every frame, so it never
+  // has to assume or remember. Nothing below may take the player holding the
+  // phone to be players[0].
+  const [seat, setSeat] = useState(HOST_SEAT);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectedValue, setSelectedValue] = useState<number | null>(null);
   const [pendingShape, setPendingShape] = useState(false);
@@ -198,19 +353,29 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
   const [isPaused, setIsPaused] = useState(false);
   const [confirmQuit, setConfirmQuit] = useState(false);
 
-  // Initialize the game only after mount (client-side) so Math.random()
-  // doesn't cause a hydration mismatch.
+  const isGuest = net?.role === "guest";
+
+  // Lets the frame handler read the table as it stands when a frame lands,
+  // rather than as it stood when the handler was made.
+  const gameRef = useRef<GameState | null>(null);
   useEffect(() => {
-    const id = requestAnimationFrame(() => {
-      setGame(initGame(numPlayers, mode));
-      playSound("start");
-    });
-    return () => cancelAnimationFrame(id);
-  }, [numPlayers, mode]);
+    gameRef.current = game;
+  }, [game]);
+
+  // Every change to the table goes through here. When hosting, that also means
+  // telling the other phones: the host's copy is the only real one, so their
+  // screens are always a picture of what has already happened here.
+  const commit = useCallback(
+    (next: GameState) => {
+      setGame(() => next);
+      if (net?.role === "host") net.publish(next);
+    },
+    [net],
+  );
 
   // `rejecting` is true when these cards are played in answer to a pending 5
   // challenge — a single 5, or a double/triple of 5s, cancels the pick 3.
-  function triggerPopup(cards: Card[], rejecting = false) {
+  const triggerPopup = useCallback((cards: Card[], rejecting = false) => {
     const count = cards.length;
     const last = cards[count - 1];
     const isRejection = rejecting && last.value === 5;
@@ -237,11 +402,66 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
       text: msg,
     });
     window.setTimeout(() => setPopup(null), 2200);
-  }
+    // Nothing in here changes between renders, so the frame handler below can
+    // depend on it without being rebuilt after every move.
+  }, []);
+
+  // Frames from the other phones. As a guest they are the table as the host
+  // now has it, along with which seat is mine. Hosting, they are a request
+  // from one of the guests — and the host is what decides whether a request is
+  // allowed, so each is checked against the state the host actually holds
+  // rather than taken as given.
+  const handleFrame = useCallback(
+    (message: NetMessage, from: number) => {
+      if (isGuest) {
+        // The host's word on what the table looks like, which is the only one
+        // that counts.
+        if (message.type !== "state") return;
+        setSeat(message.seat);
+        setGame(message.state);
+        return;
+      }
+      const current = gameRef.current;
+      if (!current) return;
+      // What a guest may and may not do lives in lib/netProtocol.ts, beside
+      // the wire format it is defending.
+      const applied = applyGuestMove(current, message, from);
+      if (!applied) return;
+      commit(applied.state);
+      if (applied.cards.length > 0) {
+        triggerPopup(applied.cards, applied.rejecting);
+        setRulePause(isRulePlay(applied.cards));
+      }
+    },
+    [isGuest, commit, triggerPopup],
+  );
+
+  useEffect(() => {
+    if (!net) return;
+    return net.subscribe(handleFrame);
+  }, [net, handleFrame]);
+
+  // Initialize the game only after mount (client-side) so Math.random()
+  // doesn't cause a hydration mismatch.
+  useEffect(() => {
+    // A guest is dealt to. It waits for the host's first frame rather than
+    // shuffling a table of its own, which would be a different table.
+    if (isGuest) return;
+    const id = requestAnimationFrame(() => {
+      commit(initGame(numPlayers, mode, seats));
+      playSound("start");
+    });
+    return () => cancelAnimationFrame(id);
+    // seats is fixed for the life of a board — the key changes with the setup.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [numPlayers, mode, isGuest, commit]);
 
   // AI turn handling
   useEffect(() => {
     if (!game) return;
+    // The host plays the bots for the whole table. If a guest ran them too,
+    // both phones would decide the same bot's move separately.
+    if (isGuest) return;
     if (game.gameOver || game.roundOver) return;
     if (pendingShape) return;
     if (isPaused) return;
@@ -257,12 +477,12 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
         const five = player.hand.find((c) => c.value === 5);
         if (five) {
           const next = playCard(game, game.currentPlayerIndex, five);
-          setGame(() => next);
+          commit(next);
           triggerPopup([five], true);
           return;
         }
         const next = drawCard(game, game.currentPlayerIndex);
-        setGame(() => next);
+        commit(next);
         return;
       }
 
@@ -283,22 +503,22 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
           ];
           const chosen = shapes[Math.floor(Math.random() * shapes.length)];
           const next = playCard(game, game.currentPlayerIndex, card, chosen);
-          setGame(() => next);
+          commit(next);
           triggerPopup([card]);
         } else {
           const next = playCard(game, game.currentPlayerIndex, card);
-          setGame(() => next);
+          commit(next);
           triggerPopup([card]);
         }
       } else {
         const next = drawCard(game, game.currentPlayerIndex);
-        setGame(() => next);
+        commit(next);
         playSound("drawCard");
       }
     }, delay);
 
     return () => clearTimeout(timer);
-  }, [game, pendingShape, rulePause, isPaused]);
+  }, [game, pendingShape, rulePause, isPaused, isGuest, commit, triggerPopup]);
 
   // Play a sound whenever a card is played (by anyone). We detect this by
   // watching the top card change while the round is still active.
@@ -350,18 +570,18 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
   useEffect(() => {
     if (!game) return;
     if (game.gameOver && !prevOverRef.current) {
-      const youWon = game.players[0].active && game.winnerIndex === 0;
+      const youWon = game.players[seat].active && game.winnerIndex === seat;
       playSound(youWon ? "win" : "lose");
     }
     prevOverRef.current = game.gameOver;
-  }, [game]);
+  }, [game, seat]);
 
   // All hooks above. Now guard for null game before rendering handlers.
   if (!game) {
     return (
       <div className="flex h-full items-center justify-center bg-linear-to-br from-emerald-900 via-emerald-800 to-teal-900 text-white">
         <div className="animate-pulse text-xl font-semibold">
-          Shuffling the deck...
+          {isGuest ? "Waiting for the host to deal…" : "Shuffling the deck…"}
         </div>
       </div>
     );
@@ -369,8 +589,10 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
 
   const g = game; // non-null local alias for the handler closures
   const currentPlayer = g.players[g.currentPlayerIndex];
+  // My turn, rather than any human's turn: in a game across phones the other
+  // people are humans too, and their turn is not mine to play.
   const isHumanTurn =
-    currentPlayer?.isHuman && !g.gameOver && !g.roundOver && !isPaused;
+    g.currentPlayerIndex === seat && !g.gameOver && !g.roundOver && !isPaused;
 
   const effectiveShape: Shape = g.topCard.shape;
 
@@ -379,13 +601,13 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
   if (isHumanTurn && !pendingShape) {
     if (g.fiveResponse) {
       // Responding to a 5: the only way to escape is to play another 5.
-      g.players[0].hand.forEach((c) => {
+      g.players[seat].hand.forEach((c) => {
         if (c.value === 5) humanPlayable.add(c.id);
       });
     } else if (g.holdAll) {
-      g.players[0].hand.forEach((c) => humanPlayable.add(c.id));
+      g.players[seat].hand.forEach((c) => humanPlayable.add(c.id));
     } else {
-      g.players[0].hand.forEach((c) => {
+      g.players[seat].hand.forEach((c) => {
         if (canPlay(c, g.topCard)) humanPlayable.add(c.id);
       });
     }
@@ -395,17 +617,10 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
   // preserves insertion order, so the last card selected stays last in the
   // array — and playCard/playCards make that one the new top card.
   function selectedCardsInOrder(ids: Set<string>): Card[] {
-    const byId = new Map(g.players[0].hand.map((c) => [c.id, c]));
+    const byId = new Map(g.players[seat].hand.map((c) => [c.id, c]));
     return [...ids]
       .map((id) => byId.get(id))
       .filter((c): c is Card => c !== undefined);
-  }
-
-  function isRulePlay(cards: Card[]): boolean {
-    if (cards.length > 1) return true;
-    const c = cards[0];
-    if (c.shape === "whot") return true;
-    return c.value === 1 || c.value === 14;
   }
 
   // Commit the currently selected cards (if any) to the table.
@@ -422,15 +637,25 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
     }
 
     const rejecting = g.fiveResponse;
-    const next =
-      cards.length === 1 ? playCard(g, 0, cards[0]) : playCards(g, 0, cards);
-    setGame(() => next);
     setSelectedIds(new Set());
     setSelectedValue(null);
     selectedIdsRef.current = new Set();
     selectedValueRef.current = null;
     triggerPopup(cards, rejecting);
     setRulePause(isRulePlay(cards));
+
+    // A guest names the cards and lets the host work out what they do. The
+    // popup and cleared selection above happen straight away so the tap feels
+    // answered; the table itself updates when the host's frame lands.
+    if (isGuest) {
+      net?.send({ type: "play", cardIds: cards.map((c) => c.id) });
+      return;
+    }
+    commit(
+      cards.length === 1
+        ? playCard(g, seat, cards[0])
+        : playCards(g, seat, cards),
+    );
   }
 
   // Called whenever a card is clicked on the human's turn.
@@ -493,8 +718,6 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
   function handleDraw() {
     if (!isHumanTurn || pendingShape) return;
     if (submitTimer.current) clearTimeout(submitTimer.current);
-    const next = drawCard(g, 0);
-    setGame(() => next);
     setSelectedIds(new Set());
     setSelectedValue(null);
     // If the human is responding to a 5 challenge (e.g. a previous player
@@ -505,39 +728,57 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
     //   playSound("drawPenalty");
     // } else {
     // }
+    if (isGuest) {
+      net?.send({ type: "draw" });
+      return;
+    }
+    commit(drawCard(g, seat));
   }
 
   function handleEndHoldAll() {
     if (!isHumanTurn || pendingShape) return;
     if (submitTimer.current) clearTimeout(submitTimer.current);
-    const next = endTurn(g, 0);
-    setGame(() => next);
     setSelectedIds(new Set());
+    if (isGuest) {
+      net?.send({ type: "endTurn" });
+      return;
+    }
+    commit(endTurn(g, seat));
   }
 
   function handleShapePick(shape: Shape) {
     if (selectedIds.size === 0) return;
     const cards = selectedCardsInOrder(selectedIds);
     if (cards.length === 0) return;
-    const next = playCards(g, 0, cards, shape);
-    setGame(() => next);
     setSelectedIds(new Set());
     setPendingShape(false);
     triggerPopup(cards);
     setRulePause(isRulePlay(cards));
+    if (isGuest) {
+      net?.send({ type: "play", cardIds: cards.map((c) => c.id), shape });
+      return;
+    }
+    commit(playCards(g, seat, cards, shape));
   }
 
   function handleNextRound() {
-    setGame(() => nextRound(g));
     setSelectedIds(new Set());
     setPendingShape(false);
+    if (isGuest) {
+      net?.send({ type: "nextRound" });
+      return;
+    }
+    commit(nextRound(g));
   }
 
   function restart() {
     if (submitTimer.current) clearTimeout(submitTimer.current);
-    setGame(() => initGame(numPlayers, mode));
     setSelectedIds(new Set());
     setPendingShape(false);
+    // Only the host reshuffles, because it deals for the whole table. A
+    // guest's Restart button is hidden rather than left to do nothing.
+    if (isGuest) return;
+    commit(initGame(numPlayers, mode, seats));
   }
 
   function handlePause() {
@@ -558,19 +799,23 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
   const winner = g.winnerIndex !== null ? g.players[g.winnerIndex] : null;
   // Players still in the tournament
   const activePlayers = g.players.filter((p) => p.active);
-  // Active bots. Assign each bot to a distinct position so a single remaining
-  // bot is only ever shown once (avoids the same bot appearing twice).
-  // In elimination mode the arrangement starts from the human's RIGHT, so the
-  // first bot sits on the right, the second on top, and the third on the left.
-  // In 1v1 the single bot goes to the top.
-  const bots = g.players.filter((p) => !p.isHuman && p.active);
+  // The other players still in, walked round the table in turn order from the
+  // seat after mine — so whoever plays next sits on my right, the one after
+  // them opposite me, and the last on my left. Each gets a distinct position,
+  // so a single remaining opponent is only ever drawn once. Every phone draws
+  // this from its own seat outwards, which is what puts each player at the
+  // bottom of their own screen holding their own cards.
+  const others: { player: Player; index: number }[] = [];
+  for (let step = 1; step < g.players.length; step++) {
+    const index = (seat + step) % g.players.length;
+    if (g.players[index].active) {
+      others.push({ player: g.players[index], index });
+    }
+  }
   const isElim = g.mode === "elimination";
-  // The bot shown at the top of the board.
-  const topBot = isElim ? (bots[1] ?? null) : (bots[0] ?? null);
-  // The bot shown on the right (first bot in elimination, hidden in 1v1).
-  const rightBot = isElim ? (bots[0] ?? null) : null;
-  // The bot shown on the left.
-  const leftBot = bots[2] ?? null;
+  const topBot = isElim ? (others[1] ?? null) : (others[0] ?? null);
+  const rightBot = isElim ? (others[0] ?? null) : null;
+  const leftBot = others[2] ?? null;
   // The round winner (safe from elimination)
   const roundWinner =
     g.roundWinnerIndex !== null ? g.players[g.roundWinnerIndex] : null;
@@ -584,7 +829,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
   } else if (g.holdAll) {
     humanHint = "Hold All! You may play any card. Click 'End Turn' when done.";
   } else if (selectedValue !== null && selectedIds.size > 0) {
-    const totalOfValue = g.players[0].hand.filter(
+    const totalOfValue = g.players[seat].hand.filter(
       (c) => c.value === selectedValue,
     ).length;
     if (selectedIds.size < totalOfValue) {
@@ -619,7 +864,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
           Deck: <span className="font-bold text-white">{g.deck.length}</span>
         </div>
         <div className="flex items-center gap-2">
-          {!g.gameOver && !g.roundOver && (
+          {!g.gameOver && !g.roundOver && !net && (
             <button
               type="button"
               onClick={handlePause}
@@ -628,13 +873,15 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
               {isPaused ? "Resume" : "Pause"}
             </button>
           )}
-          <button
-            type="button"
-            onClick={restart}
-            className="rounded-lg border border-white/20 px-3 py-1 text-sm font-semibold transition hover:bg-white/10"
-          >
-            Restart
-          </button>
+          {!isGuest && (
+            <button
+              type="button"
+              onClick={restart}
+              className="rounded-lg border border-white/20 px-3 py-1 text-sm font-semibold transition hover:bg-white/10"
+            >
+              Restart
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setConfirmQuit(true)}
@@ -652,10 +899,10 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
         <div className="flex shrink-0 justify-center">
           {topBot && (
             <BotArea
-              name={topBot.name}
-              count={topBot.hand.length}
+              name={topBot.player.name}
+              count={topBot.player.hand.length}
               isTurn={
-                g.currentPlayerIndex === g.players.indexOf(topBot) &&
+                g.currentPlayerIndex === topBot.index &&
                 !g.gameOver &&
                 !g.roundOver
               }
@@ -674,11 +921,11 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
           <div className="flex flex-1 items-center justify-start">
             {g.mode !== "1v1" && leftBot && (
               <BotArea
-                name={leftBot.name}
-                count={leftBot.hand.length}
+                name={leftBot.player.name}
+                count={leftBot.player.hand.length}
                 side="left"
                 isTurn={
-                  g.currentPlayerIndex === g.players.indexOf(leftBot) &&
+                  g.currentPlayerIndex === leftBot.index &&
                   !g.gameOver &&
                   !g.roundOver
                 }
@@ -725,11 +972,11 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
           <div className="flex flex-1 items-center justify-end">
             {g.mode !== "1v1" && rightBot && (
               <BotArea
-                name={rightBot.name}
-                count={rightBot.hand.length}
+                name={rightBot.player.name}
+                count={rightBot.player.hand.length}
                 side="right"
                 isTurn={
-                  g.currentPlayerIndex === g.players.indexOf(rightBot) &&
+                  g.currentPlayerIndex === rightBot.index &&
                   !g.gameOver &&
                   !g.roundOver
                 }
@@ -742,7 +989,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
       {/* Human hand */}
       <div className="shrink-0">
         <PlayerHand
-          cards={g.players[0].hand}
+          cards={g.players[seat].hand}
           isActive={isHumanTurn && !pendingShape}
           isHuman
           playableIds={humanPlayable}
@@ -786,7 +1033,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
           <div className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-8 text-center text-zinc-900 shadow-2xl">
             <div className="text-4xl mb-2">🎉</div>
             <h2 className="text-2xl font-black">
-              {roundWinner?.isHuman
+              {g.roundWinnerIndex === seat
                 ? "You won the round!"
                 : `${roundWinner?.name} won the round!`}
             </h2>
@@ -873,8 +1120,8 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
       {g.gameOver &&
         g.mode === "elimination" &&
         winner &&
-        !winner.isHuman &&
-        !g.players[0].active && (
+        g.winnerIndex !== seat &&
+        !g.players[seat].active && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
             <div
               className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl bg-white
@@ -900,7 +1147,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
                   <div
                     key={i}
                     className={`rounded-xl border p-3 ${
-                      p.isHuman
+                      i === seat
                         ? "border-red-300 bg-red-50"
                         : i === g.winnerIndex
                           ? "border-emerald-400 bg-emerald-50"
@@ -909,7 +1156,7 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
                   >
                     <span className="font-bold">
                       {p.name}
-                      {p.isHuman && !p.active && " (eliminated) ❌"}
+                      {i === seat && !p.active && " (eliminated) ❌"}
                       {i === g.winnerIndex && " 🏆"}
                     </span>
                   </div>
@@ -940,12 +1187,12 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
       has its own dedicated game-over screen above) */}
       {g.gameOver &&
         winner &&
-        !(g.mode === "elimination" && !g.players[0].active) && (
+        !(g.mode === "elimination" && !g.players[seat].active) && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
             <div className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-8 text-center text-zinc-900 shadow-2xl">
               <div className="text-6xl mb-2">🏆</div>
               <h2 className="text-3xl font-black">
-                {winner.isHuman
+                {g.winnerIndex === seat
                   ? g.mode === "1v1"
                     ? "You win the 1v1 match!"
                     : "You are the Champion!"
@@ -955,10 +1202,10 @@ function GameBoard({ numPlayers, mode, onQuit }: GameBoardProps) {
               </h2>
               <p className="mt-2 text-zinc-600">
                 {g.mode === "1v1"
-                  ? winner.isHuman
+                  ? g.winnerIndex === seat
                     ? "You emptied your hand first. Well played!"
                     : "Your opponent emptied their hand first. Better luck next time!"
-                  : winner.isHuman
+                  : g.winnerIndex === seat
                     ? "You survived every round and won the tournament!"
                     : "The last player standing. Better luck next time!"}
               </p>

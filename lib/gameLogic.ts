@@ -115,22 +115,37 @@ function dealRound(
   };
 }
 
+/** One place at the table: who sits there, and whether a person plays it. */
+export interface Seat {
+  name: string;
+  isHuman: boolean;
+}
+
 /**
- * Initializes a new game with `numPlayers` total players (1 human + bots)
- * in the given `mode` ("1v1" = single round, "elimination" = tournament).
+ * Initializes a new game with `numPlayers` total players in the given `mode`
+ * ("1v1" = single round, "elimination" = tournament).
+ *
+ * `seats` names the table and says which places people are playing: the setup
+ * screen fills it in, and a game across several phones uses it to seat the
+ * other players where bots would otherwise be. Left out, the table falls back
+ * to one human with bots in every other place.
  */
 export function initGame(
   numPlayers = 4,
   mode: GameMode = "elimination",
+  seats?: Seat[],
 ): GameState {
-const count = Math.max(2, Math.min(4, Math.floor(numPlayers)));
-  const names: { name: string; isHuman: boolean }[] = [
-    { name: "You", isHuman: true },
-  ];
-for (let i = 1; i < count; i++) {
-    names.push({ name: `Player ${i}`, isHuman: false });
-  }
-  return dealRound(names, 1, mode);
+  const count = Math.max(2, Math.min(4, Math.floor(numPlayers)));
+  const table: Seat[] = seats?.length
+    ? seats.slice(0, count)
+    : [
+        { name: "You", isHuman: true },
+        ...Array.from({ length: count - 1 }, (_, i) => ({
+          name: `Player ${i + 1}`,
+          isHuman: false,
+        })),
+      ];
+  return dealRound(table, 1, mode);
 }
 
 export function describeCard(card: Card): string {
