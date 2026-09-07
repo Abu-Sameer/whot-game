@@ -26,8 +26,10 @@ export interface GameState {
   roundNumber: number;
   // Elimination info for the just-finished round (null when no player eliminated yet).
   lastElimination: RoundElimination | null;
-  // When a whot is played, the human must pick the next shape.
-  pendingShapeSelection: boolean;
+  // The shape a Whot asked everyone to follow, or null to follow the top
+  // card's own shape. Without this the pile stays a Whot, which matches
+  // anything — so the shape that was chosen has to be remembered here.
+  requestedShape: Shape | null;
   // Skip tracking: a star played means the next player is skipped.
   jumpCount: number;
   // "Hold All" active: after playing a 1, the current player may keep playing
@@ -48,6 +50,14 @@ export interface RoundElimination {
   name: string;
   // The hand total that got them eliminated.
   total: number;
+}
+
+/**
+ * The shape that has to be followed: whatever a Whot asked for, or failing
+ * that the top card's own shape.
+ */
+export function activeShape(state: GameState): Shape {
+  return state.requestedShape ?? state.topCard.shape;
 }
 
 export function canPlay(
@@ -85,6 +95,59 @@ function nextActive(
 
 /** Cards each player is dealt at the start of a round. */
 export const HAND_SIZE = 5;
+
+/**
+ * Settles a play that left its player holding nothing.
+ *
+ * If the card can be won on, that is the round. If it cannot, the play still
+ * stands — the card is on the pile and its rule applies as normal — but the
+ * player goes to market for one card rather than winning, and the game carries
+ * on from there.
+ *
+ * Returns true when the round has been won and the caller should stop.
+ */
+function settleEmptyHand(
+  next: GameState,
+  playerIndex: number,
+  lastCard: Card,
+  rules: Rules,
+): boolean {
+  const win = () => {
+    next.roundOver = true;
+    next.roundWinnerIndex = playerIndex;
+    next.currentPlayerIndex = playerIndex;
+    return true;
+  };
+
+  if (canFinishOn(lastCard, rules)) return win();
+
+  // Turn the discard pile over if the deck has run dry, so there is something
+  // to hand them.
+  let deck = next.deck;
+  if (deck.length === 0 && next.discardPile.length > 0) {
+    deck = shuffle(next.discardPile);
+    next.discardPile = [];
+  }
+  // Nothing left anywhere to draw from: let the round end rather than leave
+  // somebody holding no cards and unable to finish.
+  if (deck.length === 0) return win();
+
+  const name = next.players[playerIndex].name;
+  const drawn = drawCardsForPlayer(
+    deck,
+    next.players,
+    playerIndex,
+    1,
+    next.log,
+  );
+  next.deck = drawn.deck;
+  next.players = drawn.players;
+  next.log = [
+    ...drawn.log,
+    `${name} could not win on ${describeCard(lastCard)} and went to market.`,
+  ];
+  return false;
+}
 
 /**
  * Creates a fresh round for the given table.
@@ -143,7 +206,7 @@ function dealRound(
     roundWinnerIndex: null,
     roundNumber,
     lastElimination: null,
-    pendingShapeSelection: false,
+    requestedShape: null,
     jumpCount: 0,
     holdAll: false,
     fiveResponse: false,
@@ -179,18 +242,19 @@ function ruleActive(value: number | null, rules: Rules): boolean {
   }
 }
 
-// Numbers a round cannot be finished on. Every one of them carries a rule
-// that needs somebody to still be holding cards afterwards: Hold All and
-// general market both hand the turn straight back, a suspension is a skip
-// aimed at the next player, and a Whot asks for a shape to follow. Whot cards
-// are the 20s.
-const CANNOT_FINISH = new Set([1, 8, 14, 20]);
+// Numbers a round cannot be won on: every card that carries a rule. Each of
+// them needs somebody to still be holding cards afterwards — Hold All and
+// general market hand the turn straight back, pick 2 and pick 3 put it on the
+// next player, a suspension skips them, and a Whot asks for a shape to follow.
+// Whot cards are the 20s.
+const CANNOT_FINISH = new Set([1, 2, 5, 8, 14, 20]);
 
 /**
- * Whether a round may be ended on this card.
+ * Whether a round may be won on this card.
  *
- * Holding one of these as your last card means going to market instead — you
- * cannot win on it.
+ * Playing one of these as your last card is perfectly legal — it just cannot
+ * be the last thing you do, so instead of winning you go to market for a card
+ * and play carries on. See settleEmptyHand.
  */
 export function canFinishOn(card: Card, rules: Rules): boolean {
   if (rules.endOnSpecial) return true;
@@ -287,25 +351,25 @@ export function playCards(
   // Only the last card's shape and value govern the effect.
   const lastCard = cards[cards.length - 1];
 
-  if (lastCard.shape === "whot") {
-    const effectiveShape = chosenShape ?? lastCard.shape;
-    next.log.push(`${player.name} changed the shape to ${effectiveShape}s.`);
-    next.pendingShapeSelection = true;
-    return next;
-  }
-
-  // If the player emptied their hand, the round is over (they win the round).
-  if (hand.length === 0) {
-    next.roundOver = true;
-    next.roundWinnerIndex = playerIndex;
-    next.currentPlayerIndex = playerIndex;
-    next.log = [...next.log];
-    return next;
-  }
-
   // Hand-built states (the dev scripts) may not carry rules; fall back rather
   // than crash on them.
   const rules = state.rules ?? DEFAULT_RULES;
+
+  // A Whot names the shape everyone has to follow from here. Remembering it
+  // is the whole of the card's effect — there is no rule beyond that, so the
+  // turn passes on at the end like any plain card's would.
+  next.requestedShape =
+    lastCard.shape === "whot" ? (chosenShape ?? null) : null;
+  if (lastCard.shape === "whot" && chosenShape) {
+    next.log.push(`${player.name} changed the shape to ${chosenShape}s.`);
+  }
+
+  if (
+    hand.length === 0 &&
+    settleEmptyHand(next, playerIndex, lastCard, rules)
+  ) {
+    return next;
+  }
   // A card whose rule is switched off keeps its number but loses its effect,
   // so every branch below misses it and the turn simply passes on.
   const cardValue = ruleActive(lastCard.value, rules) ? lastCard.value : null;
@@ -431,28 +495,21 @@ export function playCard(
 
   next.log.push(`${player.name} played ${describeCard(card)}.`);
 
-  // Determine shape now in effect
-  let effectiveShape: Shape = card.shape;
-  if (card.shape === "whot") {
-    effectiveShape = chosenShape ?? card.shape;
-    next.log.push(`${player.name} changed the shape to ${effectiveShape}s.`);
-  }
-
-  // Whot cards: the current player picks the shape -> set pending shape selection
-  if (card.shape === "whot") {
-    next.pendingShapeSelection = true;
-    return next;
-  }
-
-  // If the player emptied their hand, the round is over (they win the round).
-  if (hand.length === 0) {
-    next.roundOver = true;
-    next.roundWinnerIndex = playerIndex;
-    next.currentPlayerIndex = playerIndex;
-    return next;
-  }
-
+  // Hand-built states (the dev scripts) may not carry rules; fall back rather
+  // than crash on them.
   const rules = state.rules ?? DEFAULT_RULES;
+
+  // A Whot names the shape everyone has to follow from here. Remembering it
+  // is the whole of the card's effect — there is no rule beyond that, so the
+  // turn passes on at the end like any plain card's would.
+  next.requestedShape = card.shape === "whot" ? (chosenShape ?? null) : null;
+  if (card.shape === "whot" && chosenShape) {
+    next.log.push(`${player.name} changed the shape to ${chosenShape}s.`);
+  }
+
+  if (hand.length === 0 && settleEmptyHand(next, playerIndex, card, rules)) {
+    return next;
+  }
   // A card whose rule is switched off keeps its number but loses its effect,
   // so every branch below misses it and the turn simply passes on.
   const cardValue = ruleActive(card.value, rules) ? card.value : null;
@@ -937,15 +994,9 @@ export function chooseAiCard(
     currentShape?: Shape;
     holdAll?: boolean;
     difficulty?: Difficulty;
-    rules?: Rules;
   } = {},
 ): Card | null {
-  const {
-    currentShape,
-    holdAll,
-    difficulty = "medium",
-    rules = DEFAULT_RULES,
-  } = opts;
+  const { currentShape, holdAll, difficulty = "medium" } = opts;
   const shape = currentShape ?? topCard.shape;
 
   // During "Hold All", the AI may play any card.
@@ -954,10 +1005,6 @@ export function chooseAiCard(
     : hand.filter((c) => canPlay(c, topCard, shape));
 
   if (playable.length === 0) return null;
-
-  // Down to one card, a bot holding something it cannot finish on has to go to
-  // market like anybody else.
-  if (hand.length === 1 && !canFinishOn(hand[0], rules)) return null;
 
   if (difficulty === "easy") {
     if (Math.random() < EASY_MISS_CHANCE) return null;

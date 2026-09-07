@@ -21,7 +21,7 @@ import {
   BOT_NAMES,
   HAND_SIZE,
   initGame,
-  canFinishOn,
+  activeShape,
   canPlay,
   DEFAULT_RULES,
   playCard,
@@ -646,9 +646,9 @@ function GameBoard({
       }
 
       const card = chooseAiCard(player.hand, game.topCard, {
+        currentShape: activeShape(game),
         holdAll: game.holdAll,
         difficulty,
-        rules: game.rules,
       });
       if (card) {
         if (card.shape === "whot") {
@@ -854,18 +854,13 @@ function GameBoard({
     !g.roundOver &&
     !isPaused;
 
-  const effectiveShape: Shape = g.topCard.shape;
+  const effectiveShape: Shape = activeShape(g);
 
   // Compute playable cards for the human player
   const myHand = g.players[seat].hand;
-  // Down to one card, it has to be one the round can be finished on — a 1, an
-  // 8, a 14 or a Whot cannot win, so holding one means going to market. See
-  // canFinishOn in lib/gameLogic.ts.
-  const stuckOnLastCard =
-    myHand.length === 1 && !canFinishOn(myHand[0], g.rules);
 
   const humanPlayable = new Set<string>();
-  if (isHumanTurn && !pendingShape && !stuckOnLastCard) {
+  if (isHumanTurn && !pendingShape) {
     if (g.fiveResponse) {
       // Responding to a 5: the only way out is to play another 5.
       myHand.forEach((c) => {
@@ -875,7 +870,7 @@ function GameBoard({
       myHand.forEach((c) => humanPlayable.add(c.id));
     } else {
       myHand.forEach((c) => {
-        if (canPlay(c, g.topCard)) humanPlayable.add(c.id);
+        if (canPlay(c, g.topCard, effectiveShape)) humanPlayable.add(c.id);
       });
     }
   }
@@ -909,8 +904,6 @@ function GameBoard({
       askForShape();
       return;
     }
-
-    if (cards.length === myHand.length && !canFinishOn(last, g.rules)) return;
 
     const rejecting = g.fiveResponse;
     // Read before the play, because playing is what clears it.
@@ -977,10 +970,6 @@ function GameBoard({
       !curIds.has(card.id)
     ) {
       const nextIds = new Set([...curIds, card.id]);
-      // Completing the group would empty the hand, so it has to end on a card
-      // the round can be finished on. Refusing the click here is what stops a
-      // pair of 8s being played out together to win.
-      if (nextIds.size === myHand.length && !canFinishOn(card, g.rules)) return;
       setSelectedIds(nextIds);
       selectedIdsRef.current = nextIds;
     } else {
@@ -1126,8 +1115,6 @@ function GameBoard({
     // the hand.
     humanHint =
       "Play a 5 to cancel the draw-3 penalty — or draw 3 cards. Your choice!";
-  } else if (stuckOnLastCard) {
-    humanHint = "You can't win on that card — go to market and draw.";
   } else if (g.holdAll) {
     humanHint = "Hold All! You may play any card. Click 'End Turn' when done.";
   } else if (selectedValue !== null && selectedIds.size > 0) {

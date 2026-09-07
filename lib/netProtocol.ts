@@ -13,7 +13,8 @@
 import type { Card, Shape } from "./types";
 import type { GameState } from "./gameLogic";
 import {
-  canFinishOn,
+  activeShape,
+  canPlay,
   drawCard,
   endTurn,
   nextRound,
@@ -170,14 +171,18 @@ export function applyGuestMove(
       }
       // Playing several at once is a rule of its own, and it can be off.
       if (cards.length > 1 && !state.rules.doubles) return null;
-      // A round cannot be finished on a card that carries a rule, so a play
-      // that would empty the hand has to end on one that can. The card that
-      // lands is the last of the group.
-      if (
-        cards.length === hand.length &&
-        !canFinishOn(cards[cards.length - 1], state.rules)
-      ) {
-        return null;
+      // And the cards have to be legal: the same test the guest's own screen
+      // made before it asked. A group has to be all of one number; a pending
+      // pick 3 can only be answered with a 5; a 1 has opened the pile up to
+      // anything; otherwise one of the group has to follow the pile.
+      if (!cards.every((card) => card.value === cards[0].value)) return null;
+      if (state.fiveResponse) {
+        if (!cards.every((card) => card.value === 5)) return null;
+      } else if (!state.holdAll) {
+        const shape = activeShape(state);
+        if (!cards.some((card) => canPlay(card, state.topCard, shape))) {
+          return null;
+        }
       }
       const rejecting = state.fiveResponse;
       // Read before the play, because playing is what clears it.

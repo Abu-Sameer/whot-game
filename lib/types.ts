@@ -83,8 +83,10 @@ export interface GameState {
   roundNumber: number;
   // Elimination info for the just-finished round (null when no player eliminated yet).
   lastElimination: RoundElimination | null;
-  // When a whot is played, the human must pick the next shape.
-  pendingShapeSelection: boolean;
+  // The shape a Whot asked everyone to follow, or null to follow the top
+  // card's own shape. Without this the pile stays a Whot, which matches
+  // anything — so the shape that was chosen has to be remembered here.
+  requestedShape: Shape | null;
   // Skip tracking: a star played means the next player is skipped.
   jumpCount: number;
 // "Hold All" active: after playing a 1, the current player may keep playing
