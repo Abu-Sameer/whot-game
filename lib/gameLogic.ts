@@ -30,6 +30,11 @@ export interface GameState {
   // card's own shape. Without this the pile stays a Whot, which matches
   // anything — so the shape that was chosen has to be remembered here.
   requestedShape: Shape | null;
+  // Whether the current player is playing on from a card of their own rather
+  // than starting a fresh turn — a 1 keeps the turn through Hold All, and a 14
+  // hands it straight back. What follows is a continuation, and gets called as
+  // one.
+  continuedTurn: boolean;
   // Skip tracking: a star played means the next player is skipped.
   jumpCount: number;
   // "Hold All" active: after playing a 1, the current player may keep playing
@@ -116,6 +121,12 @@ function settleEmptyHand(
     next.roundOver = true;
     next.roundWinnerIndex = playerIndex;
     next.currentPlayerIndex = playerIndex;
+    // A won round has no turn left to be in the middle of: a pick 3 nobody
+    // has to answer, or a Hold All run nobody is on.
+    next.fiveResponse = false;
+    next.holdAll = false;
+    next.continuedTurn = false;
+    next.jumpCount = 0;
     return true;
   };
 
@@ -207,6 +218,7 @@ function dealRound(
     roundNumber,
     lastElimination: null,
     requestedShape: null,
+    continuedTurn: false,
     jumpCount: 0,
     holdAll: false,
     fiveResponse: false,
@@ -242,12 +254,16 @@ function ruleActive(value: number | null, rules: Rules): boolean {
   }
 }
 
-// Numbers a round cannot be won on: every card that carries a rule. Each of
-// them needs somebody to still be holding cards afterwards — Hold All and
-// general market hand the turn straight back, pick 2 and pick 3 put it on the
-// next player, a suspension skips them, and a Whot asks for a shape to follow.
-// Whot cards are the 20s.
-const CANNOT_FINISH = new Set([1, 2, 5, 8, 14, 20]);
+// Numbers a round cannot be won on. Each of these needs the player who put it
+// down to still be there afterwards: Hold All and general market both hand the
+// turn straight back to them, a suspension is a skip they have to be around to
+// give, and a Whot names a shape for a hand they no longer hold. Whot cards
+// are the 20s.
+//
+// Pick 2 and pick 3 are not among them. Those land entirely on the next
+// player, so there is nothing left for the one who played it to do — a 2 or a
+// 5 wins the round outright, a 5 played to cancel a pick 3 included.
+const CANNOT_FINISH = new Set([1, 8, 14, 20]);
 
 /**
  * Whether a round may be won on this card.
@@ -364,11 +380,12 @@ export function playCards(
     next.log.push(`${player.name} changed the shape to ${chosenShape}s.`);
   }
 
-  if (
-    hand.length === 0 &&
-    settleEmptyHand(next, playerIndex, lastCard, rules)
-  ) {
-    return next;
+  // A play that emptied the hand either wins the round, or sends its player to
+  // market because the card cannot be won on.
+  let wentToMarket = false;
+  if (hand.length === 0) {
+    if (settleEmptyHand(next, playerIndex, lastCard, rules)) return next;
+    wentToMarket = true;
   }
   // A card whose rule is switched off keeps its number but loses its effect,
   // so every branch below misses it and the turn simply passes on.
@@ -443,26 +460,44 @@ export function playCards(
   if (cardValue === 1) {
     // "Hold All": the player keeps the turn and may play any card next.
     next.holdAll = true;
+    next.continuedTurn = true;
     next.currentPlayerIndex = playerIndex;
     log.push(`${player.name} played a 1 — Hold All! They may play any card.`);
     next.log = log;
   } else if (cardValue === 14) {
-    // Card 14: the current player plays again.
+    // Card 14: the current player plays again. They have to follow the pile
+    // as normal, so no Hold All — but it is still the same turn carrying on.
     next.holdAll = false;
+    next.continuedTurn = true;
     next.currentPlayerIndex = playerIndex;
     next.log = log;
   } else if (cardValue === 8) {
     // 8: skip (hold) the next player entirely. (Star has no special rule.)
     next.holdAll = false;
+    next.continuedTurn = false;
     next.currentPlayerIndex = skipIndex;
   } else if (cardValue === 2 || cardValue === 5) {
     // Cards 2 & 5: the player who drew the penalty is skipped; the player after them plays.
     next.holdAll = false;
+    next.continuedTurn = false;
     next.currentPlayerIndex = afterIndex;
   } else {
     next.holdAll = false;
+    next.continuedTurn = false;
     next.currentPlayerIndex = nextIndex;
   }
+
+  // Having had to go to market on their last card, their turn is over whatever
+  // the card would otherwise have granted them: no Hold All, no second go off
+  // a 14, and no skip to hand out. Play moves on to the next player. Anything
+  // the card did to the others — a general market, say — still stands; it is
+  // only the extra turn that is taken back.
+  if (wentToMarket) {
+    next.holdAll = false;
+    next.continuedTurn = false;
+    next.currentPlayerIndex = nextIndex;
+  }
+
   next.jumpCount = 0;
 
   return next;
@@ -507,8 +542,12 @@ export function playCard(
     next.log.push(`${player.name} changed the shape to ${chosenShape}s.`);
   }
 
-  if (hand.length === 0 && settleEmptyHand(next, playerIndex, card, rules)) {
-    return next;
+  // A play that emptied the hand either wins the round, or sends its player to
+  // market because the card cannot be won on.
+  let wentToMarket = false;
+  if (hand.length === 0) {
+    if (settleEmptyHand(next, playerIndex, card, rules)) return next;
+    wentToMarket = true;
   }
   // A card whose rule is switched off keeps its number but loses its effect,
   // so every branch below misses it and the turn simply passes on.
@@ -582,26 +621,44 @@ export function playCard(
   if (cardValue === 1) {
     // "Hold All": the player keeps the turn and may play any card next.
     next.holdAll = true;
+    next.continuedTurn = true;
     next.currentPlayerIndex = playerIndex;
     log.push(`${player.name} played a 1 — Hold All! They may play any card.`);
     next.log = log;
   } else if (cardValue === 14) {
-    // Card 14: the current player plays again.
+    // Card 14: the current player plays again. They have to follow the pile
+    // as normal, so no Hold All — but it is still the same turn carrying on.
     next.holdAll = false;
+    next.continuedTurn = true;
     next.currentPlayerIndex = playerIndex;
     next.log = log;
   } else if (cardValue === 8) {
     // 8: skip (hold) the next player entirely. (Star has no special rule.)
     next.holdAll = false;
+    next.continuedTurn = false;
     next.currentPlayerIndex = skipIndex;
   } else if (cardValue === 2 || cardValue === 5) {
     // Cards 2 & 5: the player who drew the penalty is skipped; the player after them plays.
     next.holdAll = false;
+    next.continuedTurn = false;
     next.currentPlayerIndex = afterIndex;
   } else {
     next.holdAll = false;
+    next.continuedTurn = false;
     next.currentPlayerIndex = nextIndex;
   }
+
+  // Having had to go to market on their last card, their turn is over whatever
+  // the card would otherwise have granted them: no Hold All, no second go off
+  // a 14, and no skip to hand out. Play moves on to the next player. Anything
+  // the card did to the others — a general market, say — still stands; it is
+  // only the extra turn that is taken back.
+  if (wentToMarket) {
+    next.holdAll = false;
+    next.continuedTurn = false;
+    next.currentPlayerIndex = nextIndex;
+  }
+
   next.jumpCount = 0;
 
   return next;
@@ -724,6 +781,7 @@ function advanceTurn(state: GameState, playerIndex: number): GameState {
     currentPlayerIndex: nextActive(state.players, playerIndex, state.direction),
     jumpCount: 0,
     holdAll: false,
+    continuedTurn: false,
   };
 }
 

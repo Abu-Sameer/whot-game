@@ -36,6 +36,14 @@ const SOUNDS: Record<string, string> = {
   checkUp: file("check up.mp3"),
   continue: file("continue.mp3"),
   market: file("market.mp3"),
+
+  // The shapes, said once a Whot has named one. Keyed by the Shape values
+  // themselves, so speak(shape) is all the call site needs.
+  circle: file("circle.mp3"),
+  cross: file("cross.mp3"),
+  square: file("square.mp3"),
+  star: file("star.mp3"),
+  triangle: file("triangle.mp3"),
 };
 
 let audioContext: AudioContext | null = null;

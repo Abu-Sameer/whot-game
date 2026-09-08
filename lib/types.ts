@@ -87,6 +87,11 @@ export interface GameState {
   // card's own shape. Without this the pile stays a Whot, which matches
   // anything — so the shape that was chosen has to be remembered here.
   requestedShape: Shape | null;
+  // Whether the current player is playing on from a card of their own rather
+  // than starting a fresh turn — a 1 keeps the turn through Hold All, and a 14
+  // hands it straight back. What follows is a continuation, and gets called as
+  // one.
+  continuedTurn: boolean;
   // Skip tracking: a star played means the next player is skipped.
   jumpCount: number;
 // "Hold All" active: after playing a 1, the current player may keep playing

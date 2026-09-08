@@ -186,7 +186,7 @@ export function applyGuestMove(
       }
       const rejecting = state.fiveResponse;
       // Read before the play, because playing is what clears it.
-      const continuing = state.holdAll;
+      const continuing = state.continuedTurn;
       const next =
         cards.length === 1
           ? playCard(state, seat, cards[0], message.shape)

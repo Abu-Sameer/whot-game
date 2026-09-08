@@ -629,7 +629,7 @@ function GameBoard({
     const delay = rulePause ? 3200 : 2000;
     const timer = setTimeout(() => {
       // Read before the play, because playing is what clears it.
-      const continuing = game.holdAll;
+      const continuing = game.continuedTurn;
       // During a "5 challenge", the AI may play a 5 to cancel the draw-3
       // penalty. If it has one, play it; otherwise it draws the 3 cards.
       if (game.fiveResponse) {
@@ -774,6 +774,25 @@ function GameBoard({
     prevShownRef.current = showRoundResult;
   }, [showRoundResult, game?.mode]);
 
+  // The shape a Whot asked for, said once it has been named. Watching the
+  // state rather than the three places a Whot can be played from — mine, a
+  // bot's, and a guest's as the host applies it — means it is called once,
+  // wherever it came from, and after the "I need" that opened the choice.
+  //
+  // Keyed on the Whot itself as well as the shape, so two Whots that both ask
+  // for circles are two separate calls rather than one.
+  const shapeAsked =
+    game && game.requestedShape
+      ? `${game.topCard.id}:${game.requestedShape}`
+      : null;
+  const shapeSaid = useRef<string | null>(null);
+  useEffect(() => {
+    if (shapeAsked && shapeAsked !== shapeSaid.current) {
+      speak(shapeAsked.split(":")[1]);
+    }
+    shapeSaid.current = shapeAsked;
+  }, [shapeAsked]);
+
   // "Last card!" — called the moment anybody is down to one, whoever they
   // are. It watches the real hands rather than the dealing animation, so the
   // cards passing through one on their way to five never set it off.
@@ -907,7 +926,7 @@ function GameBoard({
 
     const rejecting = g.fiveResponse;
     // Read before the play, because playing is what clears it.
-    const continuing = g.holdAll;
+    const continuing = g.continuedTurn;
     setSelectedIds(new Set());
     setSelectedValue(null);
     selectedIdsRef.current = new Set();
@@ -1030,7 +1049,7 @@ function GameBoard({
     if (selectedIds.size === 0) return;
     const cards = selectedCardsInOrder(selectedIds);
     if (cards.length === 0) return;
-    const continuing = g.holdAll;
+    const continuing = g.continuedTurn;
     setSelectedIds(new Set());
     setPendingShape(false);
     // Already called when the picker opened.
